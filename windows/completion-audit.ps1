@@ -207,6 +207,11 @@ foreach ($name in $requiredPassedSteps) {
 		    "Required local gate step did not pass in release summary."
 	}
 }
+if ($steps.ContainsKey("clipboard-stress")) {
+	$covered = $steps["clipboard-stress"].Status -eq "passed"
+	Add-Evidence $evidence "release step: clipboard-stress" $covered `
+	    $steps["clipboard-stress"].Detail
+}
 
 $releaseGateMinimums = @(
     [pscustomobject]@{

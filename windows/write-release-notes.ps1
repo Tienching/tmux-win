@@ -107,7 +107,10 @@ if ([string]::IsNullOrWhiteSpace($ReleaseCheckCommand)) {
 	    @("StressIterations", "-StressIterations"),
 	    @("SoakSeconds", "-SoakSeconds"),
 	    @("ConsoleSoakSeconds", "-ConsoleSoakSeconds"),
-	    @("ConsoleReattachCycles", "-ConsoleReattachCycles")
+	    @("ConsoleReattachCycles", "-ConsoleReattachCycles"),
+	    @("ClipboardStressIterations", "-ClipboardStressIterations"),
+	    @("ClipboardStressHoldMilliseconds",
+		"-ClipboardStressHoldMilliseconds")
 	)) {
 		if ($release.PSObject.Properties.Name -contains $pair[0]) {
 			$releaseArgs.Add($pair[1])
@@ -165,6 +168,11 @@ $signalCoverage = ""
 if ($release.PSObject.Properties.Name -contains "SignalMatrixIterations" -and
     [int]$release.SignalMatrixIterations -gt 0) {
 	$signalCoverage = "signal matrix stress, "
+}
+$clipboardCoverage = ""
+if ($release.PSObject.Properties.Name -contains "ClipboardStressIterations" -and
+    [int]$release.ClipboardStressIterations -gt 0) {
+	$clipboardCoverage = "clipboard contention stress, "
 }
 $configCoverage = ""
 if ($release.PSObject.Properties.Name -contains "RunConfigStress" -and
@@ -259,7 +267,7 @@ $ReleaseCheckCommand
 ~~~
 
 The Windows release gate passed packaged smoke, artifact hash verification,
-command-surface audit, ${respawnCoverage}${ipcAclCoverage}${jobCoverage}${clientCoverage}${signalCoverage}${configCoverage}portable zip
+command-surface audit, ${respawnCoverage}${ipcAclCoverage}${jobCoverage}${clientCoverage}${signalCoverage}${clipboardCoverage}${configCoverage}portable zip
 install/uninstall verification, MSIX packaging, ${visualCoverage}and configured stress/soak coverage.
 
 ## Command Surface
