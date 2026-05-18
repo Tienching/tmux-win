@@ -23,7 +23,8 @@ param(
 	[switch]$RequireLinuxBehaviorParity,
 	[switch]$RequireHostedCiAudit,
 	[switch]$RequireHostedCiGreen,
-	[switch]$RequireSourceStateAudit
+	[switch]$RequireSourceStateAudit,
+	[switch]$RequireProductionReady
 )
 
 Set-StrictMode -Version Latest
@@ -95,6 +96,27 @@ $HostedCiSummary = Resolve-ArtifactPath $HostedCiSummary `
 $SourceStateSummary = Resolve-ArtifactPath $SourceStateSummary `
     "source-state-audit.json"
 
+$requireMsixEffective = $RequireMsix -or $RequireProductionReady
+$requireSignedMsixEffective = $RequireSignedMsix -or $RequireProductionReady
+$requireSigningAuditEffective = $RequireSigningAudit -or
+    $RequireProductionReady
+$requireCompletionAuditEffective = $RequireCompletionAudit -or
+    $RequireProductionReady
+$requireCompletionCompleteEffective = $RequireCompletionComplete -or
+    $RequireProductionReady
+$requireIpcBoundaryAuditEffective = $RequireIpcBoundaryAudit -or
+    $RequireProductionReady
+$requireLinuxParityEffective = $RequireLinuxParity -or
+    $RequireProductionReady
+$requireLinuxBehaviorParityEffective = $RequireLinuxBehaviorParity -or
+    $RequireProductionReady
+$requireHostedCiAuditEffective = $RequireHostedCiAudit -or
+    $RequireProductionReady
+$requireHostedCiGreenEffective = $RequireHostedCiGreen -or
+    $RequireProductionReady
+$requireSourceStateAuditEffective = $RequireSourceStateAudit -or
+    $RequireProductionReady
+
 $zipSidecar = $ZipPath + ".sha256"
 $expectedZipHash = Read-Sha256Sidecar $zipSidecar
 $actualZipHash = Get-Sha256 $ZipPath
@@ -143,7 +165,7 @@ function Assert-ReleaseStepPassed([object]$Summary, [string]$Name) {
 	}
 }
 
-if ($RequireCompletionAudit) {
+if ($requireCompletionAuditEffective) {
 	foreach ($stepName in @(
 	    "build",
 	    "package-smoke",
@@ -207,10 +229,11 @@ if (Test-Path -LiteralPath $MsixPath) {
 	$signature = Get-AuthenticodeSignature -LiteralPath $MsixPath
 	$msixSignatureStatus = [string]$signature.Status
 	$msixSigned = $signature.SignerCertificate -ne $null
-	if ($RequireSignedMsix -and $signature.Status -ne "Valid") {
+	if ($requireSignedMsixEffective -and $signature.Status -ne "Valid") {
 		throw "MSIX signature is not valid: $msixSignatureStatus"
 	}
-} elseif ($RequireMsix -or $RequireSignedMsix -or $release.BuildMsix) {
+} elseif ($requireMsixEffective -or $requireSignedMsixEffective -or
+    $release.BuildMsix) {
 	throw "MSIX artifact not found: $MsixPath"
 }
 
@@ -243,10 +266,11 @@ if (Test-Path -LiteralPath $SigningSummary) {
 		throw ("signing audit metadata mismatch: {0}" -f `
 		    (@($signingAudit.MetadataMismatches) -join ";"))
 	}
-	if ($RequireSignedMsix -and $signingAudit.Status -ne "trusted") {
+	if ($requireSignedMsixEffective -and
+	    $signingAudit.Status -ne "trusted") {
 		throw "signing audit does not report trusted: $SigningSummary"
 	}
-} elseif ($RequireSigningAudit) {
+} elseif ($requireSigningAuditEffective) {
 	throw "signing audit not found: $SigningSummary"
 }
 
@@ -258,7 +282,8 @@ if (Test-Path -LiteralPath $CompletionAudit) {
 		throw "completion audit missing Status: $CompletionAudit"
 	}
 	$completionStatus = $completion.Status
-	if ($RequireCompletionComplete -and $completionStatus -ne "complete") {
+	if ($requireCompletionCompleteEffective -and
+	    $completionStatus -ne "complete") {
 		$missing = 0
 		if ($completion.PSObject.Properties.Name -contains "Missing") {
 			$missing = @($completion.Missing).Count
@@ -266,9 +291,9 @@ if (Test-Path -LiteralPath $CompletionAudit) {
 		throw ("completion audit is not complete: status={0};missing={1};source={2}" -f `
 		    $completionStatus, $missing, $CompletionAudit)
 	}
-} elseif ($RequireCompletionAudit) {
+} elseif ($requireCompletionAuditEffective) {
 	throw "completion audit not found: $CompletionAudit"
-} elseif ($RequireCompletionComplete) {
+} elseif ($requireCompletionCompleteEffective) {
 	throw "completion audit not found: $CompletionAudit"
 }
 
@@ -283,7 +308,7 @@ if (Test-Path -LiteralPath $IpcBoundarySummary) {
 		throw "IPC boundary audit has failed checks: $IpcBoundarySummary"
 	}
 	$ipcBoundaryStatus = $ipcBoundary.Status
-} elseif ($RequireIpcBoundaryAudit) {
+} elseif ($requireIpcBoundaryAuditEffective) {
 	throw "IPC boundary audit not found: $IpcBoundarySummary"
 }
 
@@ -296,7 +321,7 @@ if (Test-Path -LiteralPath $LinuxParitySummary) {
 		throw "Linux surface parity matrix failed: $LinuxParitySummary"
 	}
 	$linuxParityStatus = $linuxParity.Status
-} elseif ($RequireLinuxParity) {
+} elseif ($requireLinuxParityEffective) {
 	throw "Linux surface parity matrix not found: $LinuxParitySummary"
 }
 
@@ -330,7 +355,7 @@ if (Test-Path -LiteralPath $LinuxBehaviorSummary) {
 	}
 	$linuxBehaviorStatus = $linuxBehavior.Status
 	$linuxBehaviorCategories = $requiredCategories -join ","
-} elseif ($RequireLinuxBehaviorParity) {
+} elseif ($requireLinuxBehaviorParityEffective) {
 	throw "Linux behavior parity matrix not found: $LinuxBehaviorSummary"
 }
 
@@ -345,7 +370,8 @@ if (Test-Path -LiteralPath $HostedCiSummary) {
 	if ($hostedCi.PSObject.Properties.Name -contains "HeadSha") {
 		$hostedCiHeadSha = [string]$hostedCi.HeadSha
 	}
-	if (($RequireHostedCiAudit -or $RequireHostedCiGreen) -and
+	if (($requireHostedCiAuditEffective -or
+	    $requireHostedCiGreenEffective) -and
 	    [string]::IsNullOrWhiteSpace($hostedCiHeadSha)) {
 		throw "hosted CI audit missing target HeadSha: $HostedCiSummary"
 	}
@@ -364,12 +390,14 @@ if (Test-Path -LiteralPath $HostedCiSummary) {
 			    $hostedCiHeadSha, $greenHeadSha)
 		}
 	}
-	if ($RequireHostedCiGreen -and $hostedCi.Status -ne "passed") {
+	if ($requireHostedCiGreenEffective -and
+	    $hostedCi.Status -ne "passed") {
 		throw ("hosted CI audit is not green: status={0};detail={1};source={2}" -f `
 		    $hostedCi.Status, $hostedCi.Detail, $HostedCiSummary)
 	}
 	$hostedCiStatus = $hostedCi.Status
-} elseif ($RequireHostedCiAudit -or $RequireHostedCiGreen) {
+} elseif ($requireHostedCiAuditEffective -or
+    $requireHostedCiGreenEffective) {
 	throw "hosted CI audit not found: $HostedCiSummary"
 }
 
@@ -389,13 +417,13 @@ if (Test-Path -LiteralPath $SourceStateSummary) {
 	$sourceStateStatus = $(if ([bool]$sourceState.IsDirty) {
 	    "dirty"
 	} else { "clean" })
-	if ($RequireSourceStateAudit -and [bool]$sourceState.IsDirty) {
+	if ($requireSourceStateAuditEffective -and [bool]$sourceState.IsDirty) {
 		throw ("source state is dirty: tracked={0};untracked={1};source={2}" -f `
 		    [int]$sourceState.TrackedChangedCount,
 		    [int]$sourceState.UntrackedCount,
 		    $SourceStateSummary)
 	}
-} elseif ($RequireSourceStateAudit) {
+} elseif ($requireSourceStateAuditEffective) {
 	throw "source state audit not found: $SourceStateSummary"
 }
 

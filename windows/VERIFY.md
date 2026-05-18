@@ -433,6 +433,11 @@ source trees and verifies the source-state JSON contains the expected fields.
 When both hosted CI and source-state summaries are present, the artifact
 verifier also rejects mismatched head SHAs.
 
+Use `-RequireProductionReady` for the final publication preflight. It is a
+single shorthand for the production-required checks: signed and trusted MSIX,
+signing audit, completion audit status `complete`, IPC boundary audit, Linux
+surface and behavior parity, hosted CI green run, and clean source-state audit.
+
 Then refresh release notes so the published notes include the full evidence
 summary:
 
