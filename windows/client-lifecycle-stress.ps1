@@ -71,6 +71,16 @@ function Start-ClientTmuxProcess([string[]]$Arguments,
 	$psi.RedirectStandardError = $true
 	$psi.UseShellExecute = $false
 
+	if ($RedirectInput) {
+		$oldInputEncoding = [Console]::InputEncoding
+		try {
+			[Console]::InputEncoding = [System.Text.Encoding]::ASCII
+			return [System.Diagnostics.Process]::Start($psi)
+		} finally {
+			[Console]::InputEncoding = $oldInputEncoding
+		}
+	}
+
 	return [System.Diagnostics.Process]::Start($psi)
 }
 
@@ -152,6 +162,13 @@ function Read-ControlUntil([System.Diagnostics.Process]$Process,
 	throw "$Name did not produce expected control output: $Needle; output: $text"
 }
 
+function Write-ProcessInput([System.Diagnostics.Process]$Process,
+    [string]$Text) {
+	$bytes = [System.Text.Encoding]::ASCII.GetBytes($Text)
+	$Process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+	$Process.StandardInput.BaseStream.Flush()
+}
+
 function Wait-NoTmuxProcess([int]$Timeout = $TimeoutSeconds) {
 	$sw = [Diagnostics.Stopwatch]::StartNew()
 	while ($sw.Elapsed.TotalSeconds -lt $Timeout) {
@@ -216,9 +233,8 @@ try {
 		$readTask = Read-ControlUntil $control $readTask $controlLines `
 		    "control attach iteration $i" "%session-changed"
 		$controlMarker = "TMUX_WIN32_CONTROL_CLIENT_$i"
-		$control.StandardInput.WriteLine(
-		    "display-message -p `"$controlMarker`"")
-		$control.StandardInput.Flush()
+		Write-ProcessInput $control `
+		    "display-message -p `"$controlMarker`"`n"
 		$readTask = Read-ControlUntil $control $readTask $controlLines `
 		    "control command iteration $i" $controlMarker
 		$clientList = (Invoke-ClientTmux @("list-clients", "-F",
@@ -252,8 +268,7 @@ try {
 			$stderr = $attached.StandardError.ReadToEnd()
 			throw "attached client exited early: $stderr"
 		}
-		$attached.StandardInput.Write("echo $attachMarker`r")
-		$attached.StandardInput.Flush()
+		Write-ProcessInput $attached "echo $attachMarker`r"
 		Wait-PaneContains "attached client iteration $i" `
 		    "lifecycle:0.0" $attachMarker | Out-Null
 		try {

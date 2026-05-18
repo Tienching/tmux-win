@@ -195,7 +195,8 @@ $requiredPassedSteps = @(
     "zip-install-uninstall",
     "stress",
     "soak",
-    "console-soak"
+    "console-soak",
+    "clipboard-stress"
 )
 foreach ($name in $requiredPassedSteps) {
 	$covered = $steps.ContainsKey($name) -and
@@ -207,12 +208,6 @@ foreach ($name in $requiredPassedSteps) {
 		    "Required local gate step did not pass in release summary."
 	}
 }
-if ($steps.ContainsKey("clipboard-stress")) {
-	$covered = $steps["clipboard-stress"].Status -eq "passed"
-	Add-Evidence $evidence "release step: clipboard-stress" $covered `
-	    $steps["clipboard-stress"].Detail
-}
-
 $releaseGateMinimums = @(
     [pscustomobject]@{
 	Name = "respawn iterations"; Property = "RespawnIterations"; Minimum = 20
@@ -240,6 +235,9 @@ $releaseGateMinimums = @(
     },
     [pscustomobject]@{
 	Name = "console reattach cycles"; Property = "ConsoleReattachCycles"; Minimum = 2
+    },
+    [pscustomobject]@{
+	Name = "clipboard stress iterations"; Property = "ClipboardStressIterations"; Minimum = 3
     }
 )
 $releaseGateStrengthDetails = [System.Collections.Generic.List[string]]::new()
@@ -638,6 +636,7 @@ Add-Checklist $checklist `
     "release step: stress",
     "release step: soak",
     "release step: console-soak",
+    "release step: clipboard-stress",
     "release gate stress thresholds"
 ) $(if ($coreBehaviorCovered) { "" } else {
     "One or more core behavior release steps are missing or below release gate thresholds."

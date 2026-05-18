@@ -22,6 +22,7 @@ $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
   -SoakSeconds 10 `
   -ConsoleSoakSeconds 10 `
   -ConsoleReattachCycles 2 `
+  -ClipboardStressIterations 3 `
   -BuildMsix
 ```
 
@@ -54,6 +55,7 @@ The gate must pass all of these steps:
 - Packaged stress iterations.
 - Mixed runtime soak.
 - Real-console attach soak.
+- Clipboard contention stress.
 - Optional visible Windows Terminal attach check when
   `-RunVisualTerminalVerify` is explicitly requested.
 
