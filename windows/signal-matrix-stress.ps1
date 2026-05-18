@@ -102,16 +102,28 @@ function Wait-CurrentCommand([string]$ServerName, [string]$Target,
 function Wait-FileContains([string]$Path, [string]$Needle,
     [int]$Timeout = 12000) {
 	$watch = [Diagnostics.Stopwatch]::StartNew()
+	$lastReadError = ""
 	while ($watch.ElapsedMilliseconds -lt $Timeout) {
 		if (Test-Path -LiteralPath $Path) {
-			$content = Get-Content -LiteralPath $Path -Raw
+			$content = ""
+			try {
+				$content = Get-Content -LiteralPath $Path -Raw `
+				    -ErrorAction Stop
+			} catch {
+				$lastReadError = $_.Exception.Message
+				Start-Sleep -Milliseconds 200
+				continue
+			}
 			if ($content -like "*$Needle*") {
 				return
 			}
 		}
 		Start-Sleep -Milliseconds 200
 	}
-	throw "file did not contain ${Needle}: $Path"
+	if ([string]::IsNullOrWhiteSpace($lastReadError)) {
+		throw "file did not contain ${Needle}: $Path"
+	}
+	throw "file did not contain ${Needle}: $Path; last_read_error=$lastReadError"
 }
 
 function Write-CtrlBreakProbe([string]$Path) {
