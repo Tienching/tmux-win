@@ -370,6 +370,27 @@ if (-not [string]::IsNullOrWhiteSpace($SigningSummary)) {
 		    (";usable_publisher_matching_candidates={0}" -f `
 		    $signing.UsablePublisherMatchingCandidateCount)
 	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "ProductionSigningReady") {
+		$candidateDetail +=
+		    (";production_signing_ready={0}" -f `
+		    $signing.ProductionSigningReady)
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "LocalProductionCertificateReady") {
+		$candidateDetail +=
+		    (";local_production_certificate_ready={0}" -f `
+		    $signing.LocalProductionCertificateReady)
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "SigningReadinessGaps") {
+		$gaps = @($signing.SigningReadinessGaps)
+		if ($gaps.Count -gt 0) {
+			$candidateDetail +=
+			    (";signing_readiness_gaps={0}" -f `
+			    ($gaps -join " "))
+		}
+	}
 	$trustedSigningDetail = ("status={0};authenticode={1}{2};source={3}" -f `
 	    $signing.Status, $signing.AuthenticodeStatus, $candidateDetail,
 	    $SigningSummary)

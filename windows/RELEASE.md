@@ -187,8 +187,9 @@ The script checks `-Publisher` against the signing certificate subject before
 calling `signtool.exe`, and fails before packaging when a requested certificate
 thumbprint is not present in the local certificate stores.
 Use `windows/signing-audit.ps1` before publication to record whether the MSIX
-is trusted and whether the release machine has any code-signing certificate
-whose subject, private key, and validity window match the MSIX Publisher.
+is trusted, whether the release machine has any code-signing certificate whose
+subject, private key, and validity window match the MSIX Publisher, and the
+specific `SigningReadinessGaps` still blocking production signing.
 
 ## Hosted CI
 

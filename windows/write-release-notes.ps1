@@ -239,6 +239,24 @@ if ($null -ne $signing) {
 		$candidateDetail +=
 		    "; usable_publisher_matching_candidates=$($signing.UsablePublisherMatchingCandidateCount)"
 	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "ProductionSigningReady") {
+		$candidateDetail +=
+		    "; production_signing_ready=$($signing.ProductionSigningReady)"
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "LocalProductionCertificateReady") {
+		$candidateDetail +=
+		    "; local_production_certificate_ready=$($signing.LocalProductionCertificateReady)"
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "SigningReadinessGaps") {
+		$gaps = @($signing.SigningReadinessGaps)
+		if ($gaps.Count -gt 0) {
+			$candidateDetail +=
+			    "; signing_readiness_gaps=$($gaps -join ' ')"
+		}
+	}
 	$signingStatus = Format-TableValue (
 	    "$($signing.Status); Authenticode=$authenticode$candidateDetail")
 	$evidenceRows.Add("| Signing audit | $signingStatus |")
