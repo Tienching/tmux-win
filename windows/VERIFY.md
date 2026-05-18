@@ -354,6 +354,10 @@ whether a signer subject matches the manifest Publisher.
 It also inventories local personal-store code-signing certificates, including
 private-key availability, validity window, and whether any certificate subject
 matches the MSIX Publisher.
+The summary includes `ProductionSigningReady`,
+`LocalProductionCertificateReady`, and `SigningReadinessGaps` so a release
+record distinguishes an unsigned artifact from a missing local publisher-matched
+code-signing certificate.
 `verify-release-artifacts.ps1 -RequireSigningAudit` rejects those metadata
 mismatches independently of whether production trusted signing is required.
 

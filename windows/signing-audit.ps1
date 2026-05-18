@@ -238,10 +238,39 @@ $status = if ($signature.Status -eq "Valid" -and $signer -ne $null -and
 } else {
 	"unsigned"
 }
+$localProductionCertificateReady =
+    $usablePublisherMatchingCandidateCount -gt 0
+$productionSigningReady = $status -eq "trusted"
+$signingReadinessGaps = [System.Collections.Generic.List[string]]::new()
+if ($signer -eq $null) {
+	$signingReadinessGaps.Add("MSIX is not Authenticode signed.")
+} elseif ($signature.Status -ne "Valid") {
+	$signingReadinessGaps.Add(
+	    ("Authenticode signature status is {0}: {1}" -f `
+	    $signature.Status, $signature.StatusMessage))
+}
+foreach ($mismatch in $metadataMismatches) {
+	$signingReadinessGaps.Add([string]$mismatch)
+}
+if ($signingCertificateCandidates.Count -eq 0) {
+	$signingReadinessGaps.Add(
+	    "No local code-signing certificate candidates were found.")
+} elseif ($publisherMatchingCandidateCount -eq 0) {
+	$signingReadinessGaps.Add(
+	    ("No local code-signing certificate subject matches manifest Publisher '{0}'." -f `
+	    $manifestPublisher))
+} elseif ($usablePublisherMatchingCandidateCount -eq 0) {
+	$signingReadinessGaps.Add(
+	    ("No local publisher-matching code-signing certificate has a private key and valid time window for Publisher '{0}'." -f `
+	    $manifestPublisher))
+}
 
 $audit = [pscustomobject]@{
 	GeneratedUtc = [DateTime]::UtcNow.ToString("o")
 	Status = $status
+	ProductionSigningReady = $productionSigningReady
+	LocalProductionCertificateReady = $localProductionCertificateReady
+	SigningReadinessGaps = $signingReadinessGaps.ToArray()
 	Msix = $Msix
 	SHA256 = $hash
 	MsixSummary = $MsixSummary
@@ -283,6 +312,8 @@ $audit | ConvertTo-Json -Depth 5 |
 
 Write-Host "signing_audit=$Output"
 Write-Host "status=$status"
+Write-Host "production_signing_ready=$productionSigningReady"
+Write-Host "local_production_certificate_ready=$localProductionCertificateReady"
 Write-Host "authenticode_status=$($signature.Status)"
 if ($signer -ne $null) {
 	Write-Host "signer_thumbprint=$($signer.Thumbprint)"
