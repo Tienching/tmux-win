@@ -23,7 +23,11 @@ accepted reason why the Unix behavior does not apply on Windows.
 Latest full local gate evidence, from 2026-05-18:
 
 ```powershell
-.\windows\release-check.ps1 -SkipBuild -RespawnIterations 20 `
+.\windows\release-check.ps1 `
+  -CC 'C:\msys64\mingw64\bin\gcc.exe' `
+  -CXX 'C:\msys64\mingw64\bin\g++.exe' `
+  -Yacc 'C:\msys64\usr\bin\bison.exe' `
+  -RespawnIterations 20 `
   -IpcAclIterations 3 `
   -JobStressIterations 10 `
   -ClientStressIterations 5 `
@@ -93,10 +97,10 @@ $headSha = (& git rev-parse HEAD).Trim()
 ```
 
 Latest observed portable zip SHA256:
-`078bd290e5beeb25dad1f46484e441911073b49b18839ee345a1716f1fe4c092`.
+`1a98e4093efef9297a84f2f77f7c811ac838e593103d5a1576fa7e41970c3d36`.
 
 Latest observed unsigned MSIX SHA256:
-`264c9d587324d890de38fef24c75269de904e715a9914d97336065da714c286f`.
+`ae172fd82ee275441462e23fe43e69851271ff0340009bcac59c1e239bea1e1c`.
 
 Latest completion audit:
 
