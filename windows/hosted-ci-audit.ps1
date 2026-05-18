@@ -52,6 +52,11 @@ function Invoke-GitHubApi([string]$Uri) {
 	    -Headers $headers
 }
 
+function Test-GitHubTokenPresent {
+	return (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) -or
+	    (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN))
+}
+
 function Add-QueryParameter([string]$Uri, [string]$Name, [string]$Value) {
 	if ([string]::IsNullOrWhiteSpace($Value)) {
 		return $Uri
@@ -62,14 +67,45 @@ function Add-QueryParameter([string]$Uri, [string]$Name, [string]$Value) {
 	    [Uri]::EscapeDataString($Value))
 }
 
+function Get-ResponseHeader([object]$Response, [string]$Name) {
+	if ($null -eq $Response -or $null -eq $Response.Headers) {
+		return ""
+	}
+	try {
+		$value = $Response.Headers[$Name]
+		if ($null -eq $value) {
+			return ""
+		}
+		if ($value -is [array]) {
+			return [string]$value[0]
+		}
+		return [string]$value
+	} catch {
+		return ""
+	}
+}
+
 function Get-ExceptionDetail([System.Management.Automation.ErrorRecord]$ErrorRecord) {
 	$response = $ErrorRecord.Exception.Response
+	$message = [string]$ErrorRecord.Exception.Message
 	if ($response -ne $null -and
 	    $response.PSObject.Properties.Name -contains "StatusCode") {
-		return ("HTTP {0} {1}" -f [int]$response.StatusCode,
+		$detail = ("HTTP {0} {1}" -f [int]$response.StatusCode,
 		    $response.StatusDescription)
+		$remaining = Get-ResponseHeader $response "X-RateLimit-Remaining"
+		$reset = Get-ResponseHeader $response "X-RateLimit-Reset"
+		if ($remaining -eq "0" -or $message -like "*rate limit*") {
+			$detail += "; GitHub API rate limit reached"
+			if (-not (Test-GitHubTokenPresent)) {
+				$detail += "; set GH_TOKEN or GITHUB_TOKEN for authenticated requests"
+			}
+			if (-not [string]::IsNullOrWhiteSpace($reset)) {
+				$detail += "; reset_epoch=$reset"
+			}
+		}
+		return $detail
 	}
-	return $ErrorRecord.Exception.Message
+	return $message
 }
 
 if ([string]::IsNullOrWhiteSpace($Repository)) {
@@ -87,6 +123,7 @@ if ($RunLimit -lt 1) {
 if ($RunLimit -gt 100) {
 	$RunLimit = 100
 }
+$authenticated = Test-GitHubTokenPresent
 
 $status = "failed"
 $workflow = $null
@@ -152,6 +189,7 @@ $summary = [pscustomobject]@{
 	HeadSha = $HeadSha
 	Branch = $Branch
 	RunLimit = $RunLimit
+	Authenticated = $authenticated
 	Status = $status
 	Detail = $detail
 	Workflow = $(if ($null -ne $workflow -and $workflow.Count -ne 0) {

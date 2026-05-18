@@ -183,6 +183,9 @@ summary with release hashes and command-surface counts.
 The hosted CI audit must target the release commit SHA. The GitHub Actions
 workflows derive that SHA from the checked-out tree with `git rev-parse HEAD`
 and store it in `hosted-ci-audit.json`.
+For local release validation, set `GH_TOKEN` or `GITHUB_TOKEN` before running
+`windows/hosted-ci-audit.ps1` so GitHub API rate limits do not hide the actual
+hosted workflow status.
 
 For release-candidate artifacts, run `.github/workflows/windows-release.yml`
 manually with a tag or ref. By default it builds, verifies, writes release
