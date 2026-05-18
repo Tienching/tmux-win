@@ -316,8 +316,9 @@ Set `GH_TOKEN` or `GITHUB_TOKEN` for local release validation to avoid
 anonymous GitHub API rate limits; the hosted workflows provide `GH_TOKEN`
 automatically.
 The JSON also records whether the expected workflow file exists in the local
-checkout, which distinguishes an unpublished local workflow from a missing
-local workflow file.
+checkout and whether the target branch exists on `origin`. This distinguishes
+an unpublished local workflow, an unpushed release-candidate branch, and an
+actual missing hosted workflow.
 
 ## Source state audit
 

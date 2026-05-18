@@ -313,6 +313,31 @@ if ($null -ne $hostedCi) {
 		$localWorkflow +=
 		    "; local_workflow_sha256=$($hostedCi.LocalWorkflowSha256)"
 	}
+	$remoteBranch = ""
+	if ($hostedCi.PSObject.Properties.Name -contains
+	    "RemoteBranchChecked") {
+		$remoteBranch +=
+		    "; remote_branch_checked=$($hostedCi.RemoteBranchChecked)"
+	}
+	if ($hostedCi.PSObject.Properties.Name -contains
+	    "RemoteBranchExists") {
+		$remoteBranch +=
+		    "; remote_branch_exists=$($hostedCi.RemoteBranchExists)"
+	}
+	if ($hostedCi.PSObject.Properties.Name -contains
+	    "RemoteBranchHeadSha" -and
+	    -not [string]::IsNullOrWhiteSpace(
+		[string]$hostedCi.RemoteBranchHeadSha)) {
+		$remoteBranch +=
+		    "; remote_branch_head_sha=$($hostedCi.RemoteBranchHeadSha)"
+	}
+	if ($hostedCi.PSObject.Properties.Name -contains
+	    "RemoteBranchDetail" -and
+	    -not [string]::IsNullOrWhiteSpace(
+		[string]$hostedCi.RemoteBranchDetail)) {
+		$remoteBranch +=
+		    "; remote_branch_detail=$($hostedCi.RemoteBranchDetail)"
+	}
 	$detail = ""
 	if ($hostedCi.PSObject.Properties.Name -contains "Detail" -and
 	    -not [string]::IsNullOrWhiteSpace([string]$hostedCi.Detail)) {
@@ -320,7 +345,7 @@ if ($null -ne $hostedCi) {
 	}
 	$hostedCiStatus = Format-TableValue (
 	    "$($hostedCi.Status); head=$headSha$authenticated" +
-	    "$localWorkflow$detail")
+	    "$localWorkflow$remoteBranch$detail")
 	$evidenceRows.Add("| Hosted CI audit | $hostedCiStatus |")
 }
 if ($null -ne $sourceState) {
