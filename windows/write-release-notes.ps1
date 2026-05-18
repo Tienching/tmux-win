@@ -331,8 +331,16 @@ $defaultOptionNote
 $evidenceSection
 ## Release Status
 
-These artifacts are not production-complete unless the completion audit reports
-"complete" and the MSIX is signed with a trusted production certificate.
+These artifacts are not production-complete unless the production-ready
+verifier passes:
+
+~~~powershell
+.\windows\verify-release-artifacts.ps1 -RequireProductionReady
+~~~
+
+That gate requires a trusted-signed MSIX, completion audit status `complete`,
+a hosted CI green run for the same head SHA, clean source-state audit, IPC
+boundary audit, Linux surface parity, and Linux behavior parity.
 
 ## Install Notes
 
