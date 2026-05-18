@@ -201,6 +201,22 @@ try {
 		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		Invoke-SignalTmux $serverName @(
+		    "send-keys", "-t", "signals:0.0",
+		    "choice /c yn /t 30 /d y", "Enter") | Out-Null
+		Wait-CurrentCommand $serverName "signals:0.0" "choice.exe"
+		Invoke-SignalTmux $serverName @(
+		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
+		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
+
+		Invoke-SignalTmux $serverName @(
+		    "send-keys", "-t", "signals:0.0",
+		    "choice /c yn /t 30 /d y", "Enter") | Out-Null
+		Wait-CurrentCommand $serverName "signals:0.0" "choice.exe"
+		Invoke-SignalTmux $serverName @(
+		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
+		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
+
 		$rawScript = Join-Path $temp "raw-etx-$i.ps1"
 		$rawReady = Join-Path $temp "raw-etx-ready-$i.txt"
 		$rawOutput = Join-Path $temp "raw-etx-output-$i.txt"
