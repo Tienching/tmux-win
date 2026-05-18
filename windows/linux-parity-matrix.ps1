@@ -15,6 +15,8 @@ if ([string]::IsNullOrWhiteSpace($WindowsTmux)) {
 	$WindowsTmux = Join-Path (Get-Location) $WindowsTmux
 }
 $WindowsTmux = (Resolve-Path -LiteralPath $WindowsTmux).Path
+$WindowsTmuxSha256 = (Get-FileHash -LiteralPath $WindowsTmux `
+    -Algorithm SHA256).Hash.ToLowerInvariant()
 
 if ([string]::IsNullOrWhiteSpace($Output)) {
 	$Output = Join-Path $Root "dist\linux-parity-matrix.json"
@@ -330,6 +332,7 @@ $summary = [pscustomobject]@{
 	GeneratedUtc = [DateTime]::UtcNow.ToString("o")
 	Status = $status
 	WindowsTmux = $WindowsTmux
+	WindowsTmuxSha256 = $WindowsTmuxSha256
 	Wsl = $Wsl
 	WindowsVersion = $windows.Version
 	LinuxVersion = $linux.Version

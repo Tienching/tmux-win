@@ -265,7 +265,15 @@ if ($null -ne $linuxParity) {
 		$defaultOptionMismatches =
 		    "; default_mismatches=$($linuxParity.DefaultOptionMismatches)"
 	}
-	$evidenceRows.Add("| Linux surface parity | $($linuxParity.Status); missing=$($linuxParity.MissingLinuxSurfaceItemsOnWindows)$defaultOptionMismatches |")
+	$hashDetail = ""
+	if ($linuxParity.PSObject.Properties.Name -contains
+	    "WindowsTmuxSha256" -and
+	    -not [string]::IsNullOrWhiteSpace(
+		[string]$linuxParity.WindowsTmuxSha256)) {
+		$hashDetail =
+		    "; windows_tmux_sha256=$($linuxParity.WindowsTmuxSha256)"
+	}
+	$evidenceRows.Add("| Linux surface parity | $($linuxParity.Status); missing=$($linuxParity.MissingLinuxSurfaceItemsOnWindows)$defaultOptionMismatches$hashDetail |")
 }
 if ($null -ne $linuxBehavior) {
 	$categories = ""
@@ -273,7 +281,15 @@ if ($null -ne $linuxBehavior) {
 	    "RequiredCategories") {
 		$categories = @($linuxBehavior.RequiredCategories) -join ","
 	}
-	$evidenceRows.Add("| Linux behavior parity | $($linuxBehavior.Status); passed=$($linuxBehavior.Passed); failed=$($linuxBehavior.Failed); categories=$categories |")
+	$hashDetail = ""
+	if ($linuxBehavior.PSObject.Properties.Name -contains
+	    "WindowsTmuxSha256" -and
+	    -not [string]::IsNullOrWhiteSpace(
+		[string]$linuxBehavior.WindowsTmuxSha256)) {
+		$hashDetail =
+		    "; windows_tmux_sha256=$($linuxBehavior.WindowsTmuxSha256)"
+	}
+	$evidenceRows.Add("| Linux behavior parity | $($linuxBehavior.Status); passed=$($linuxBehavior.Passed); failed=$($linuxBehavior.Failed); categories=$categories$hashDetail |")
 }
 if ($null -ne $hostedCi) {
 	$headSha = ""

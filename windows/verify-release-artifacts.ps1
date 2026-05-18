@@ -126,6 +126,11 @@ $manifestPath = Join-Path $Package "manifest.json"
 if (-not (Test-Path -LiteralPath $manifestPath)) {
 	throw "manifest not found: $manifestPath"
 }
+$packagedTmuxPath = Join-Path $Package "tmux.exe"
+if (-not (Test-Path -LiteralPath $packagedTmuxPath)) {
+	throw "packaged tmux.exe not found: $packagedTmuxPath"
+}
+$packagedTmuxSha256 = Get-Sha256 $packagedTmuxPath
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 foreach ($file in $manifest.Files) {
 	if (-not (Test-Path -LiteralPath $file.Path)) {
@@ -329,6 +334,18 @@ $linuxParityStatus = ""
 if (Test-Path -LiteralPath $LinuxParitySummary) {
 	$linuxParity = Get-Content -LiteralPath $LinuxParitySummary -Raw |
 	    ConvertFrom-Json
+	if ($linuxParity.PSObject.Properties.Name -contains
+	    "WindowsTmuxSha256") {
+		$linuxParityTmuxSha256 =
+		    ([string]$linuxParity.WindowsTmuxSha256).ToLowerInvariant()
+		if ($linuxParityTmuxSha256 -ne $packagedTmuxSha256) {
+			throw ("Linux surface parity tmux hash mismatch: parity={0};package={1};source={2}" -f `
+			    $linuxParityTmuxSha256, $packagedTmuxSha256,
+			    $LinuxParitySummary)
+		}
+	} elseif ($RequireProductionReady) {
+		throw "Linux surface parity matrix missing WindowsTmuxSha256: $LinuxParitySummary"
+	}
 	if ($linuxParity.Status -ne "passed" -or
 	    [int]$linuxParity.MissingLinuxSurfaceItemsOnWindows -ne 0) {
 		throw "Linux surface parity matrix failed: $LinuxParitySummary"
@@ -343,6 +360,18 @@ $linuxBehaviorCategories = ""
 if (Test-Path -LiteralPath $LinuxBehaviorSummary) {
 	$linuxBehavior = Get-Content -LiteralPath $LinuxBehaviorSummary -Raw |
 	    ConvertFrom-Json
+	if ($linuxBehavior.PSObject.Properties.Name -contains
+	    "WindowsTmuxSha256") {
+		$linuxBehaviorTmuxSha256 =
+		    ([string]$linuxBehavior.WindowsTmuxSha256).ToLowerInvariant()
+		if ($linuxBehaviorTmuxSha256 -ne $packagedTmuxSha256) {
+			throw ("Linux behavior parity tmux hash mismatch: parity={0};package={1};source={2}" -f `
+			    $linuxBehaviorTmuxSha256, $packagedTmuxSha256,
+			    $LinuxBehaviorSummary)
+		}
+	} elseif ($RequireProductionReady) {
+		throw "Linux behavior parity matrix missing WindowsTmuxSha256: $LinuxBehaviorSummary"
+	}
 	if ($linuxBehavior.Status -ne "passed" -or
 	    [int]$linuxBehavior.Failed -ne 0) {
 		throw "Linux behavior parity matrix failed: $LinuxBehaviorSummary"
