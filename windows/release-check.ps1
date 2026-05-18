@@ -376,7 +376,8 @@ if ($ClipboardStressIterations -gt 0) {
 	& $clipboardStress -Tmux (Join-Path $Package "tmux.exe") `
 	    -Iterations $ClipboardStressIterations `
 	    -HoldMilliseconds $ClipboardStressHoldMilliseconds `
-	    -TimeoutSeconds $SmokeTimeoutSeconds
+	    -TimeoutSeconds $SmokeTimeoutSeconds `
+	    -RequireAvailable
 	Add-Step "clipboard-stress" "passed" `
 	    ("iterations={0};hold_ms={1}" -f $ClipboardStressIterations,
 	    $ClipboardStressHoldMilliseconds)

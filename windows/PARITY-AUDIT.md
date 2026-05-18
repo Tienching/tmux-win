@@ -85,7 +85,8 @@ $headSha = (& git rev-parse HEAD).Trim()
   -Output .\dist\signing-audit.json
 .\windows\clipboard-stress.ps1 `
   -Tmux .\dist\tmux-win32-portable\tmux.exe `
-  -Iterations 3 -HoldMilliseconds 500 -TimeoutSeconds 60
+  -Iterations 3 -HoldMilliseconds 500 -TimeoutSeconds 60 `
+  -RequireAvailable
 ```
 
 Latest observed portable zip SHA256:
@@ -170,7 +171,8 @@ portable package while an external process held the Windows clipboard open for
 directly exercises the native clipboard open retry path under transient
 clipboard ownership. `windows/release-check.ps1` can now run the same coverage
 with `-ClipboardStressIterations` and records the result as a
-`clipboard-stress` release step.
+`clipboard-stress` release step; when enabled from release-check, clipboard
+availability is required so a headless skip cannot be recorded as a pass.
 
 Latest respawn-specific regression evidence from 2026-05-15: after bounding
 ordinary ConPTY/process `CloseHandle` calls as well as `ClosePseudoConsole`,
