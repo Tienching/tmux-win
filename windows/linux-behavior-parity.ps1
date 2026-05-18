@@ -2,7 +2,10 @@ param(
 	[string]$WindowsTmux = "",
 	[string]$Wsl = "wsl.exe",
 	[string]$Output = "",
-	[int]$TimeoutSeconds = 30
+	[int]$TimeoutSeconds = 30,
+	[int]$WslCommandDelayMilliseconds = 50,
+	[ValidateSet("all", "windows", "linux")]
+	[string]$Scope = "all"
 )
 
 Set-StrictMode -Version Latest
@@ -114,12 +117,23 @@ function Invoke-PlatformTmux([string]$Platform, [string]$ServerName,
 
 	$allLinuxArguments = @("-L", $ServerName, "-f", "/dev/null") +
 	    $Arguments
-	$shellCommand = "tmux " + (($allLinuxArguments | ForEach-Object {
-	    ConvertTo-ShSingleQuoted $_
-	}) -join " ")
-	$wslArguments = "sh -lc " + (ConvertTo-WindowsArgument $shellCommand)
-	return Invoke-CapturedProcess $Wsl $wslArguments `
+	$linuxTimeoutSeconds = [Math]::Max(1, $TimeoutSeconds - 5)
+	$wslCommandArguments = @(
+	    "--exec",
+	    "timeout",
+	    "--kill-after=5s",
+	    "${linuxTimeoutSeconds}s",
+	    "tmux"
+	) + $allLinuxArguments
+	$wslArguments = ($wslCommandArguments | ForEach-Object {
+	    ConvertTo-WindowsArgument $_
+	}) -join " "
+	$result = Invoke-CapturedProcess $Wsl $wslArguments `
 	    -AllowFailure:$AllowFailure
+	if ($WslCommandDelayMilliseconds -gt 0) {
+		Start-Sleep -Milliseconds $WslCommandDelayMilliseconds
+	}
+	return $result
 }
 
 function Add-Result([System.Collections.Generic.List[object]]$Results,
@@ -1412,8 +1426,14 @@ function Run-PlatformCases([string]$Platform,
 }
 
 $results = [System.Collections.Generic.List[object]]::new()
-Run-PlatformCases "windows" $results
-Run-PlatformCases "linux" $results
+$platformsToRun = if ($Scope -eq "all") {
+    @("windows", "linux")
+} else {
+    @($Scope)
+}
+foreach ($platformToRun in $platformsToRun) {
+	Run-PlatformCases $platformToRun $results
+}
 
 $requiredCategories = @(
     "sessions",
@@ -1437,7 +1457,9 @@ $missingCategories = @($categoryCoverage | Where-Object {
     -not $_.Covered
 })
 $failed = @($results | Where-Object { -not $_.Passed })
-$status = if ($failed.Count -eq 0 -and $missingCategories.Count -eq 0) {
+$status = if ($Scope -ne "all") {
+	"partial"
+} elseif ($failed.Count -eq 0 -and $missingCategories.Count -eq 0) {
 	"passed"
 } else {
 	"failed"
@@ -1445,9 +1467,13 @@ $status = if ($failed.Count -eq 0 -and $missingCategories.Count -eq 0) {
 $summary = [pscustomobject]@{
 	GeneratedUtc = [DateTime]::UtcNow.ToString("o")
 	Status = $status
+	Scope = $Scope
+	Platforms = $platformsToRun
 	WindowsTmux = $WindowsTmux
 	WindowsTmuxSha256 = $WindowsTmuxSha256
 	Wsl = $Wsl
+	TimeoutSeconds = $TimeoutSeconds
+	WslCommandDelayMilliseconds = $WslCommandDelayMilliseconds
 	Passed = @($results | Where-Object { $_.Passed }).Count
 	Failed = $failed.Count
 	RequiredCategories = $requiredCategories
