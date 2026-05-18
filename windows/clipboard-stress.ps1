@@ -212,16 +212,28 @@ function Wait-SystemClipboardText([string]$Name, [string]$Needle,
 function Wait-FileContains([string]$Name, [string]$Path, [string]$Needle,
     [int]$Timeout = 10000) {
 	$sw = [Diagnostics.Stopwatch]::StartNew()
+	$lastReadError = ""
 	while ($sw.ElapsedMilliseconds -lt $Timeout) {
 		if (Test-Path -LiteralPath $Path) {
-			$content = Get-Content -LiteralPath $Path -Raw
+			$content = ""
+			try {
+				$content = Get-Content -LiteralPath $Path -Raw `
+				    -ErrorAction Stop
+			} catch {
+				$lastReadError = $_.Exception.Message
+				Start-Sleep -Milliseconds 100
+				continue
+			}
 			if ($content -like "*$Needle*") {
 				return $content
 			}
 		}
 		Start-Sleep -Milliseconds 100
 	}
-	throw "$Name did not contain expected text: $Needle"
+	if ([string]::IsNullOrWhiteSpace($lastReadError)) {
+		throw "$Name did not contain expected text: $Needle"
+	}
+	throw "$Name did not contain expected text: $Needle; last_read_error=$lastReadError"
 }
 
 function Wait-BufferContains([string]$Name, [string]$Needle,
