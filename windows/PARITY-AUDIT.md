@@ -115,17 +115,18 @@ Latest completion audit:
   -RequireHostedCiAudit
 ```
 
-This reported `status=not_complete` with three missing items: production
-trusted signing, hosted CI green run evidence, and clean committed source-state
-evidence for the current artifact set. The current release summary now meets
-the documented release-gate stress thresholds. Linux behavior parity is now covered
-by the Linux surface matrix, 140 focused Windows/Linux behavior cases, and the
-behavior category coverage matrix. The Windows IPC ACL/domain/service boundary
-checklist is covered by the current local IPC boundary audit. The extended
-artifact verifier now also requires hosted CI summaries to identify the target
-head SHA and rejects a passed hosted CI summary whose green run has a different
-head SHA. When source-state evidence is present too, the verifier also rejects
-a hosted-CI head SHA that does not match the source-state head SHA.
+This currently reports `status=not_complete` with two missing items:
+production trusted signing and hosted CI green run evidence. Clean committed
+source-state evidence is now covered by the source-state audit for the checked
+out release-candidate tree. The current release summary now meets the documented
+release-gate stress thresholds. Linux behavior parity is now covered by the
+Linux surface matrix, 140 focused Windows/Linux behavior cases, and the behavior
+category coverage matrix. The Windows IPC ACL/domain/service boundary checklist
+is covered by the current local IPC boundary audit. The extended artifact
+verifier now also requires hosted CI summaries to identify the target head SHA
+and rejects a passed hosted CI summary whose green run has a different head SHA.
+When source-state evidence is present too, the verifier also rejects a
+hosted-CI head SHA that does not match the source-state head SHA.
 With completion evidence required, the verifier also rejects release summaries
 below the documented release-gate stress minimums. Production publication can
 add `-RequireCompletionComplete` so any remaining completion-audit gap blocks a
@@ -255,21 +256,19 @@ commands, copy-mode, hooks, and control mode; all required categories are
 covered on both Windows and Linux.
 
 Additional hosted CI audit evidence from 2026-05-18:
-`windows/hosted-ci-audit.ps1` attempted to query the public GitHub Actions API
-for `tmux/tmux` at head SHA
-`3f651d9fa9e8433f6c95f02e7613517d3769c2f7` and reported `blocked` because the
-unauthenticated request hit `HTTP 403 rate limit exceeded`. Hosted CI remains
-open until a published workflow has a recorded green run for the release commit
-or the audit is run with API access that can observe one.
+the current local release-candidate head is not present on `origin`, and the
+GitHub connector query for that head returned no workflow runs. The generated
+`dist/hosted-ci-audit.json` records `status=no_run_for_head` for the target head
+SHA. Hosted CI remains open until the release branch or commit is pushed and a
+published workflow records a successful run for the same head SHA.
 
 Additional source-state audit evidence from 2026-05-18:
-`windows/source-state-audit.ps1` recorded head SHA
-`3f651d9fa9e8433f6c95f02e7613517d3769c2f7` with `dirty=True`, 59 tracked
-changes, 65 untracked files, and a source-state fingerprint in
-`dist/source-state-audit.json`. This is expected during local porting work but
-is not acceptable evidence for
-production release artifacts until the Windows port changes are committed and
-the release gate is rerun from a clean tree.
+`windows/source-state-audit.ps1` now records clean committed source-state
+evidence for the checked-out release-candidate tree, with `dirty=False`, zero
+tracked changes, zero untracked files, and the exact head SHA plus source-state
+fingerprint in `dist/source-state-audit.json`. This closes the previous
+source-state completion item; the audit must still be rerun after any source or
+documentation commit before publishing artifacts.
 
 Additional signing audit evidence from 2026-05-18:
 `windows/signing-audit.ps1` checked the current MSIX and reported `unsigned`
@@ -295,7 +294,7 @@ is required.
 | Signals and terminal modes | Smoke covers pane `C-c` active-child interruption for cmd-hosted and PowerShell children, ETX forwarding for raw input, `send-keys C-Break` delivering a Windows `CTRL_BREAK_EVENT`, real-console attached Ctrl+C and Ctrl+Break interrupting cmd-hosted and PowerShell children, and real-console attached raw Ctrl+C delivering ETX to a raw-input PowerShell probe. `windows/signal-matrix-stress.ps1` repeats pane-delivered `C-c`, `C-Break`, cmd-hosted and PowerShell child interruption, and raw `C-c` ETX delivery. | Full raw-mode and shell-specific signal matrix across more native console apps and longer real attached-console runs. |
 | Paths, cwd, environment | Smoke covers Windows cwd selection/fallback, cwd paths with spaces and shell metacharacters for panes, jobs, and popups, near-`MAX_PATH` cwd paths for panes and `run-shell -c`, junction cwd paths for panes and jobs, symlink cwd paths for panes and jobs when the host permits symlink creation, local `\\?\C:\...` cwd prefix normalization for panes and jobs, local administrative-share UNC cwd for `cmd.exe` panes and `run-shell -c` jobs when available, PowerShell `default-shell` command windows started in a local administrative-share UNC cwd when available, dynamic pane cwd, path expansion, default shell validation, and case-insensitive environment lookup. `windows/linux-behavior-parity.ps1` adds matched Windows/Linux `new-window -c`, `run-shell -c`, and dynamic pane cwd selection with directory names containing spaces. | Very long current directories beyond Windows `CreateProcess` cwd limits, symlink behavior on locked-down hosts, and richer permission failures. |
 | Security and users | IPC endpoint has current-user DACL and token authentication; Windows owner uid/name fallback is used by ACL and formats. `windows/ipc-acl-stress.ps1` checks endpoint ACLs, endpoint file format, bad-token rejection over a raw TCP connection, and continued valid-client connectivity after a rejected token. `windows/ipc-boundary-audit.ps1 -RunSystemTaskProbe -CreateTemporaryLocalUser -RequireComplete` passed locally for endpoint owner/DACL checks, no broad or inherited allow ACEs, bad-token rejection, valid reconnect, SYSTEM scheduled-task endpoint-read denial, alternate temporary-user endpoint-read denial, and temporary user cleanup. | Broader domain-account policy variants and non-elevated host coverage beyond the current local temporary-user and SYSTEM probes. |
-| Packaging and release | Portable zip, manifest hashes, DLL dependency discovery, user-level install/uninstall script, unsigned MSIX package generation with `makeappx`, tested MSIX signing code path with a temporary self-signed certificate, release-check gate with zip install verification, command-surface audit, respawn stress, IPC ACL/token stress, job stress, client lifecycle stress, signal matrix stress, config parser stress, signing audit, IPC boundary audit, Linux surface parity matrix, focused Linux behavior parity plus category coverage matrix, hosted CI audit, source-state audit, artifact verifier, release-note generator, JSON summaries, release checklist, CI artifact upload scaffold, manual draft-release workflow, and `Makefile.am` dist entries for Windows scripts/docs exist. | Production trusted-code-signing certificate, signed release artifacts, clean committed release source tree, hosted CI history, and upstream release approval/merge. |
+| Packaging and release | Portable zip, manifest hashes, DLL dependency discovery, user-level install/uninstall script, unsigned MSIX package generation with `makeappx`, tested MSIX signing code path with a temporary self-signed certificate, release-check gate with zip install verification, command-surface audit, respawn stress, IPC ACL/token stress, job stress, client lifecycle stress, signal matrix stress, config parser stress, signing audit, IPC boundary audit, Linux surface parity matrix, focused Linux behavior parity plus category coverage matrix, hosted CI audit, source-state audit, artifact verifier, release-note generator, JSON summaries, release checklist, CI artifact upload scaffold, manual draft-release workflow, and `Makefile.am` dist entries for Windows scripts/docs exist. | Production trusted-code-signing certificate, signed release artifacts, hosted CI history, and upstream release approval/merge. |
 
 ## Current Non-Completion Items
 
