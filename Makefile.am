@@ -8,6 +8,7 @@ EXTRA_DIST = \
 	osdep-*.c mdoc2man.awk tmux.1 \
 	windows/audit-command-surface.ps1 \
 	windows/build-mingw.ps1 \
+	windows/clipboard-stress.ps1 \
 	windows/client-lifecycle-stress.ps1 \
 	windows/completion-audit.ps1 \
 	windows/config-parser-stress.ps1 \
