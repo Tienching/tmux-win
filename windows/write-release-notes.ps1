@@ -52,6 +52,10 @@ function Read-OptionalJson([string]$Path) {
 	return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
 }
 
+function Format-TableValue([string]$Value) {
+	return $Value.Replace("|", "\|").Replace("`r", " ").Replace("`n", " ")
+}
+
 if ([string]::IsNullOrWhiteSpace($Output)) {
 	$Output = Join-Path $Dist "windows-release-notes.md"
 } elseif (-not [System.IO.Path]::IsPathRooted($Output)) {
@@ -217,7 +221,32 @@ if ($null -ne $hostedCi) {
 	if ($hostedCi.PSObject.Properties.Name -contains "HeadSha") {
 		$headSha = [string]$hostedCi.HeadSha
 	}
-	$evidenceRows.Add("| Hosted CI audit | $($hostedCi.Status); head=$headSha |")
+	$authenticated = ""
+	if ($hostedCi.PSObject.Properties.Name -contains "Authenticated") {
+		$authenticated = "; authenticated=$($hostedCi.Authenticated)"
+	}
+	$localWorkflow = ""
+	if ($hostedCi.PSObject.Properties.Name -contains
+	    "LocalWorkflowExists") {
+		$localWorkflow =
+		    "; local_workflow_exists=$($hostedCi.LocalWorkflowExists)"
+	}
+	if ($hostedCi.PSObject.Properties.Name -contains
+	    "LocalWorkflowSha256" -and
+	    -not [string]::IsNullOrWhiteSpace(
+		[string]$hostedCi.LocalWorkflowSha256)) {
+		$localWorkflow +=
+		    "; local_workflow_sha256=$($hostedCi.LocalWorkflowSha256)"
+	}
+	$detail = ""
+	if ($hostedCi.PSObject.Properties.Name -contains "Detail" -and
+	    -not [string]::IsNullOrWhiteSpace([string]$hostedCi.Detail)) {
+		$detail = "; detail=$($hostedCi.Detail)"
+	}
+	$hostedCiStatus = Format-TableValue (
+	    "$($hostedCi.Status); head=$headSha$authenticated" +
+	    "$localWorkflow$detail")
+	$evidenceRows.Add("| Hosted CI audit | $hostedCiStatus |")
 }
 if ($null -ne $sourceState) {
 	$sourceStateStatus = $(if ([bool]$sourceState.IsDirty) {
