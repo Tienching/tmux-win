@@ -123,7 +123,8 @@ Latest completion audit:
   -RequireIpcBoundaryAudit `
   -RequireLinuxParity `
   -RequireLinuxBehaviorParity `
-  -RequireHostedCiAudit
+  -RequireHostedCiAudit `
+  -RequireSourceStateAudit
 ```
 
 This currently reports `status=not_complete` with two missing items:
