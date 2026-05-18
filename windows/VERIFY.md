@@ -291,6 +291,10 @@ and `wait-for`. The JSON summary includes `CategoryCoverage` for the required
 behavior categories, including `paths`, `configuration`, `key-bindings`, and `copy-mode`, and
 `verify-release-artifacts.ps1 -RequireLinuxBehaviorParity` rejects summaries
 that do not cover every required category.
+New Linux surface and behavior parity summaries also record the SHA256 of the
+Windows `tmux.exe` under test. The artifact verifier rejects a recorded hash
+that does not match the current portable package, and `-RequireProductionReady`
+requires those hashes to be present.
 
 ## Hosted CI audit
 
