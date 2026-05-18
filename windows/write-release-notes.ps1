@@ -56,6 +56,21 @@ function Format-TableValue([string]$Value) {
 	return $Value.Replace("|", "\|").Replace("`r", " ").Replace("`n", " ")
 }
 
+function Format-PowerShellArgument([string]$Value) {
+	if ($Value -match "^[A-Za-z0-9_./:\\-]+$") {
+		return $Value
+	}
+	return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Add-ReleaseArgument(
+    [System.Collections.Generic.List[string]]$List,
+    [string]$Name,
+    [string]$Value) {
+	$List.Add($Name)
+	$List.Add((Format-PowerShellArgument $Value))
+}
+
 if ([string]::IsNullOrWhiteSpace($Output)) {
 	$Output = Join-Path $Dist "windows-release-notes.md"
 } elseif (-not [System.IO.Path]::IsPathRooted($Output)) {
@@ -102,7 +117,22 @@ if ([string]::IsNullOrWhiteSpace($ReleaseCheckCommand)) {
 	if ($buildStep.Count -gt 0 -and $buildStep[0].Status -eq "skipped") {
 		$releaseArgs.Add("-SkipBuild")
 	}
+	if ($buildStep.Count -eq 0 -or $buildStep[0].Status -ne "skipped") {
+		foreach ($pair in @(
+		    @("CC", "-CC"),
+		    @("CXX", "-CXX"),
+		    @("Yacc", "-Yacc")
+		)) {
+			if ($release.PSObject.Properties.Name -contains $pair[0] -and
+			    -not [string]::IsNullOrWhiteSpace(
+				[string]$release.($pair[0]))) {
+				Add-ReleaseArgument $releaseArgs $pair[1] `
+				    ([string]$release.($pair[0]))
+			}
+		}
+	}
 	foreach ($pair in @(
+	    @("SmokeTimeoutSeconds", "-SmokeTimeoutSeconds"),
 	    @("RespawnIterations", "-RespawnIterations"),
 	    @("IpcAclIterations", "-IpcAclIterations"),
 	    @("JobStressIterations", "-JobStressIterations"),
@@ -117,8 +147,8 @@ if ([string]::IsNullOrWhiteSpace($ReleaseCheckCommand)) {
 		"-ClipboardStressHoldMilliseconds")
 	)) {
 		if ($release.PSObject.Properties.Name -contains $pair[0]) {
-			$releaseArgs.Add($pair[1])
-			$releaseArgs.Add([string]$release.($pair[0]))
+			Add-ReleaseArgument $releaseArgs $pair[1] `
+			    ([string]$release.($pair[0]))
 		}
 	}
 	if ($release.PSObject.Properties.Name -contains "RunConfigStress" -and
