@@ -243,6 +243,17 @@ if ($null -ne $signing) {
 	    "$($signing.Status); Authenticode=$authenticode$candidateDetail")
 	$evidenceRows.Add("| Signing audit | $signingStatus |")
 }
+if ($release.PSObject.Properties.Name -contains "GitHeadSha") {
+	$releaseSourceStatus = "head=$($release.GitHeadSha)"
+	if ($release.PSObject.Properties.Name -contains "GitBranch" -and
+	    -not [string]::IsNullOrWhiteSpace([string]$release.GitBranch)) {
+		$releaseSourceStatus += "; branch=$($release.GitBranch)"
+	}
+	if ($release.PSObject.Properties.Name -contains "GitIsDirty") {
+		$releaseSourceStatus += "; dirty=$($release.GitIsDirty)"
+	}
+	$evidenceRows.Add("| Release source | $(Format-TableValue $releaseSourceStatus) |")
+}
 if ($null -ne $ipcBoundary) {
 	$failed = @($ipcBoundary.Checks | Where-Object { $_.Status -eq "failed" })
 	$evidenceRows.Add("| IPC boundary audit | $($ipcBoundary.Status); failed=$($failed.Count) |")

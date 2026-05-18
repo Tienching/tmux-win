@@ -122,7 +122,9 @@ single production gate:
 This intentionally fails until the MSIX is trusted-signed, completion audit is
 `complete`, hosted CI has a green run for the same head SHA, source-state is
 clean, IPC boundary audit passes, and Linux surface and behavior parity
-evidence is present.
+evidence is present. New release summaries also record the release-check Git
+head, and the production gate rejects artifacts whose release-check head does
+not match source-state.
 
 On an elevated release-validation host, add `-RunSystemTaskProbe` to verify a
 temporary SYSTEM scheduled task cannot read the endpoint token. For full

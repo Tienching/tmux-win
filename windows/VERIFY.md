@@ -432,6 +432,8 @@ Add `-RequireSourceStateAudit` on production release builders. It rejects dirty
 source trees and verifies the source-state JSON contains the expected fields.
 When both hosted CI and source-state summaries are present, the artifact
 verifier also rejects mismatched head SHAs.
+When newer release summaries include `GitHeadSha`, the verifier also rejects a
+release summary whose release-check head SHA does not match source-state.
 
 Use `-RequireProductionReady` for the final publication preflight. It is a
 single shorthand for the production-required checks: signed and trusted MSIX,
