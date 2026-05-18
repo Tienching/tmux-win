@@ -27,6 +27,8 @@ param(
 	[int]$SoakSeconds = 0,
 	[int]$ConsoleSoakSeconds = 0,
 	[int]$ConsoleReattachCycles = 2,
+	[int]$ClipboardStressIterations = 0,
+	[int]$ClipboardStressHoldMilliseconds = 500,
 	[switch]$BuildMsix,
 	[switch]$SignMsix,
 	[switch]$SkipCommandSurfaceAudit,
@@ -148,6 +150,7 @@ $visualTerminalVerify = Join-Path $PSScriptRoot "visual-terminal-verify.ps1"
 $stress = Join-Path $PSScriptRoot "stress-runtime.ps1"
 $soak = Join-Path $PSScriptRoot "soak-runtime.ps1"
 $consoleSoak = Join-Path $PSScriptRoot "console-attach-soak.ps1"
+$clipboardStress = Join-Path $PSScriptRoot "clipboard-stress.ps1"
 $steps = [System.Collections.Generic.List[object]]::new()
 
 function Add-Step([string]$Name, [string]$Status, [string]$Detail = "") {
@@ -369,6 +372,18 @@ if ($ConsoleSoakSeconds -gt 0) {
 	    ("seconds=0;reattach_cycles={0}" -f $ConsoleReattachCycles)
 }
 
+if ($ClipboardStressIterations -gt 0) {
+	& $clipboardStress -Tmux (Join-Path $Package "tmux.exe") `
+	    -Iterations $ClipboardStressIterations `
+	    -HoldMilliseconds $ClipboardStressHoldMilliseconds `
+	    -TimeoutSeconds $SmokeTimeoutSeconds
+	Add-Step "clipboard-stress" "passed" `
+	    ("iterations={0};hold_ms={1}" -f $ClipboardStressIterations,
+	    $ClipboardStressHoldMilliseconds)
+} else {
+	Add-Step "clipboard-stress" "skipped" "iterations=0"
+}
+
 if ($RunVisualTerminalVerify) {
 	& $visualTerminalVerify -Tmux (Join-Path $Package "tmux.exe") `
 	    -ResultPath $VisualTerminalSummaryPath
@@ -405,6 +420,8 @@ $summary = [pscustomobject]@{
 	SoakSeconds = $SoakSeconds
 	ConsoleSoakSeconds = $ConsoleSoakSeconds
 	ConsoleReattachCycles = $ConsoleReattachCycles
+	ClipboardStressIterations = $ClipboardStressIterations
+	ClipboardStressHoldMilliseconds = $ClipboardStressHoldMilliseconds
 	RunVisualTerminalVerify = [bool]$RunVisualTerminalVerify
 	VisualTerminalSummary = $VisualTerminalSummaryPath
 	CommandSurfaceSummary = $CommandSurfaceSummaryPath

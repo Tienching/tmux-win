@@ -13,7 +13,7 @@ accepted reason why the Unix behavior does not apply on Windows.
 | --- | --- | --- |
 | Native MinGW build | `windows/build-mingw.ps1` builds `tmux.exe` with bison and libevent. | Covered locally |
 | Portable artifact | `windows/package-mingw.ps1 -Zip -RunSmoke` copies runtime DLLs, writes `manifest.json`, emits `.zip` and `.sha256`. | Covered locally |
-| Release verifier | `windows/release-check.ps1` builds or reuses `tmux.exe`, packages, runs packaged smoke, verifies zip and manifest hashes, audits command/option/key-binding surface, can build an unsigned MSIX with `-BuildMsix`, verifies zip install/uninstall, can run targeted respawn stress, packaged smoke stress, mixed soak, console attach soak, and optional visible Windows Terminal UI verification with `-RunVisualTerminalVerify`, and writes `dist/release-check.json` with the passed gate steps and artifact hashes. | Covered locally |
+| Release verifier | `windows/release-check.ps1` builds or reuses `tmux.exe`, packages, runs packaged smoke, verifies zip and manifest hashes, audits command/option/key-binding surface, can build an unsigned MSIX with `-BuildMsix`, verifies zip install/uninstall, can run targeted respawn stress, packaged smoke stress, mixed soak, console attach soak, optional clipboard contention stress, and optional visible Windows Terminal UI verification with `-RunVisualTerminalVerify`, and writes `dist/release-check.json` with the passed gate steps and artifact hashes. | Covered locally |
 | Artifact verifier | `windows/verify-release-artifacts.ps1 -RequireMsix` cross-checks the zip sidecar, package manifest hashes, release summary, command-surface summary, MSIX hash summary, and MSIX signature state. | Covered locally |
 | Release notes | `windows/write-release-notes.ps1` generates `dist/windows-release-notes.md` from verified JSON summaries. | Covered locally |
 | Completion audit | `windows/completion-audit.ps1` reads the release summary, command-surface summary, MSIX summary, visible-terminal summary, optional signing audit, optional IPC boundary summary, optional Linux surface parity matrix, optional focused Linux behavior matrix, optional hosted CI audit, and optional source-state audit, then writes `dist/completion-audit.json` with a requirement-to-evidence checklist, covered evidence, and explicit non-completion items. | Reports not complete |
@@ -168,7 +168,9 @@ Additional clipboard contention evidence from 2026-05-18:
 portable package while an external process held the Windows clipboard open for
 500ms before each `set-buffer -w` and `refresh-client -l` operation. This
 directly exercises the native clipboard open retry path under transient
-clipboard ownership.
+clipboard ownership. `windows/release-check.ps1` can now run the same coverage
+with `-ClipboardStressIterations` and records the result as a
+`clipboard-stress` release step.
 
 Latest respawn-specific regression evidence from 2026-05-15: after bounding
 ordinary ConPTY/process `CloseHandle` calls as well as `ClosePseudoConsole`,
