@@ -18,7 +18,9 @@
 
 #include <sys/types.h>
 
+#ifndef _WIN32
 #include <fnmatch.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -36,7 +38,11 @@ RB_GENERATE_STATIC(environ, environ_entry, entry, environ_cmp);
 static int
 environ_cmp(struct environ_entry *envent1, struct environ_entry *envent2)
 {
+#ifdef _WIN32
+	return (_stricmp(envent1->name, envent2->name));
+#else
 	return (strcmp(envent1->name, envent2->name));
+#endif
 }
 
 /* Initialise the environment. */
@@ -216,7 +222,9 @@ environ_push(struct environ *env)
 {
 	struct environ_entry	*envent;
 
-	environ = xcalloc(1, sizeof *environ);
+#ifndef _WIN32
+	TMUX_ENVIRON = xcalloc(1, sizeof *TMUX_ENVIRON);
+#endif
 	RB_FOREACH(envent, environ, env) {
 		if (envent->value != NULL &&
 		    *envent->name != '\0' &&

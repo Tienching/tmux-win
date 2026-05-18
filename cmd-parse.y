@@ -22,10 +22,14 @@
 
 #include <ctype.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <wchar.h>
 
 #include "tmux.h"
@@ -114,7 +118,7 @@ static void	 cmd_parse_print_commands(struct cmd_parse_input *,
 	struct cmd_parse_command		 *command;
 }
 
-%token ERROR
+%token PARSE_ERROR
 %token HIDDEN
 %token IF
 %token ELSE
@@ -1257,12 +1261,71 @@ yylex_get_word(int ch)
 	return (buf);
 }
 
+#ifdef _WIN32
+static void
+yylex_append_percent_variable(char **buf, size_t *len, const char *name)
+{
+	struct environ_entry	*envent;
+	const char		*value;
+
+	envent = environ_find(global_environ, name);
+	if (envent != NULL && envent->value != NULL) {
+		value = envent->value;
+		log_debug("%s: %s -> %s", __func__, name, value);
+		yylex_append(buf, len, value, strlen(value));
+	}
+}
+
+static char *
+yylex_expand_percent_variables(const char *s, int *expanded)
+{
+	char		*buf, name[1024];
+	size_t		 len, namelen;
+	const char	*cp, *end;
+
+	*expanded = 0;
+	len = 0;
+	buf = xmalloc(1);
+
+	for (cp = s; *cp != '\0'; /* nothing */) {
+		if (*cp != '%' || !yylex_is_var(cp[1], 1)) {
+			yylex_append1(&buf, &len, *cp++);
+			continue;
+		}
+
+		end = cp + 1;
+		namelen = 0;
+		while (yylex_is_var(*end, 0)) {
+			if (namelen == (sizeof name) - 2)
+				break;
+			name[namelen++] = *end++;
+		}
+		if (*end != '%' || namelen == 0 ||
+		    namelen == (sizeof name) - 2) {
+			yylex_append1(&buf, &len, *cp++);
+			continue;
+		}
+		name[namelen] = '\0';
+		yylex_append_percent_variable(&buf, &len, name);
+		*expanded = 1;
+		cp = end + 1;
+	}
+
+	buf[len] = '\0';
+	return (buf);
+}
+#endif
+
 static int
 yylex(void)
 {
 	struct cmd_parse_state	*ps = &parse_state;
 	char			*token, *cp;
 	int			 ch, next, condition;
+#ifdef _WIN32
+	char			*expanded;
+	int			 did_expand;
+#endif
 
 	if (ps->eol)
 		ps->input->line++;
@@ -1327,7 +1390,7 @@ yylex(void)
 			if (condition && next == '{') {
 				yylval.token = yylex_format();
 				if (yylval.token == NULL)
-					return (ERROR);
+					return (PARSE_ERROR);
 				return (FORMAT);
 			}
 			while (next != '\n' && next != EOF)
@@ -1351,29 +1414,43 @@ yylex(void)
 			}
 			if (*cp == '\0')
 				return (TOKEN);
-			ps->condition = 1;
 			if (strcmp(yylval.token, "%hidden") == 0) {
+				ps->condition = 1;
 				free(yylval.token);
 				return (HIDDEN);
 			}
 			if (strcmp(yylval.token, "%if") == 0) {
+				ps->condition = 1;
 				free(yylval.token);
 				return (IF);
 			}
 			if (strcmp(yylval.token, "%else") == 0) {
+				ps->condition = 1;
 				free(yylval.token);
 				return (ELSE);
 			}
 			if (strcmp(yylval.token, "%elif") == 0) {
+				ps->condition = 1;
 				free(yylval.token);
 				return (ELIF);
 			}
 			if (strcmp(yylval.token, "%endif") == 0) {
+				ps->condition = 1;
 				free(yylval.token);
 				return (ENDIF);
 			}
+#ifdef _WIN32
+			expanded = yylex_expand_percent_variables(yylval.token,
+			    &did_expand);
+			if (did_expand) {
+				free(yylval.token);
+				yylval.token = expanded;
+				return (TOKEN);
+			}
+			free(expanded);
+#endif
 			free(yylval.token);
-			return (ERROR);
+			return (PARSE_ERROR);
 		}
 
 		/*
@@ -1381,7 +1458,7 @@ yylex(void)
 		 */
 		token = yylex_token(ch);
 		if (token == NULL)
-			return (ERROR);
+			return (PARSE_ERROR);
 		yylval.token = token;
 
 		if (strchr(token, '=') != NULL && yylex_is_var(*token, 1)) {
@@ -1588,6 +1665,45 @@ yylex_token_variable(char **buf, size_t *len)
 	return (1);
 }
 
+#ifdef _WIN32
+static int
+yylex_token_percent(char **buf, size_t *len)
+{
+	int			 ch;
+	char			 name[1024];
+	size_t			 namelen = 0;
+
+	ch = yylex_getc();
+	if (!yylex_is_var(ch, 1)) {
+		yylex_append1(buf, len, '%');
+		yylex_ungetc(ch);
+		return (1);
+	}
+
+	for (;;) {
+		if (namelen == (sizeof name) - 2) {
+			yyerror("environment variable is too long");
+			return (0);
+		}
+		name[namelen++] = ch;
+		ch = yylex_getc();
+		if (!yylex_is_var(ch, 0))
+			break;
+	}
+	name[namelen] = '\0';
+
+	if (ch != '%') {
+		yylex_append1(buf, len, '%');
+		yylex_append(buf, len, name, namelen);
+		yylex_ungetc(ch);
+		return (1);
+	}
+
+	yylex_append_percent_variable(buf, len, name);
+	return (1);
+}
+#endif
+
 static int
 yylex_token_tilde(char **buf, size_t *len)
 {
@@ -1595,12 +1711,18 @@ yylex_token_tilde(char **buf, size_t *len)
 	int			 ch;
 	char			 name[1024];
 	size_t			 namelen = 0;
+#ifndef _WIN32
 	struct passwd		*pw;
+#endif
 	const char		*home = NULL;
 
 	for (;;) {
 		ch = yylex_getc();
+#ifdef _WIN32
+		if (ch == EOF || strchr("/\\ \t\n\"'", ch) != NULL) {
+#else
 		if (ch == EOF || strchr("/ \t\n\"'", ch) != NULL) {
+#endif
 			yylex_ungetc(ch);
 			break;
 		}
@@ -1618,11 +1740,18 @@ yylex_token_tilde(char **buf, size_t *len)
 		    envent->value != NULL &&
 		    *envent->value != '\0')
 			home = envent->value;
+#ifdef _WIN32
+		else
+			home = find_home();
+#else
 		else if ((pw = getpwuid(getuid())) != NULL)
 			home = pw->pw_dir;
+#endif
 	} else {
+#ifndef _WIN32
 		if ((pw = getpwnam(name)) != NULL)
 			home = pw->pw_dir;
+#endif
 	}
 	if (home == NULL)
 		return (0);
@@ -1698,7 +1827,7 @@ yylex_token(int ch)
 			continue;
 		}
 
-		/* \ ~ and $ are expanded except in single quotes. */
+		/* \ ~ $ and Windows %VAR% are expanded except in single quotes. */
 		if (ch == '\\' && state != SINGLE_QUOTES) {
 			if (!yylex_token_escape(&buf, &len))
 				goto error;
@@ -1714,6 +1843,13 @@ yylex_token(int ch)
 				goto error;
 			goto skip;
 		}
+#ifdef _WIN32
+		if (ch == '%' && state != SINGLE_QUOTES) {
+			if (!yylex_token_percent(&buf, &len))
+				goto error;
+			goto skip;
+		}
+#endif
 		if (ch == '}' && state == NONE)
 			goto error;  /* unmatched (matched ones were handled) */
 

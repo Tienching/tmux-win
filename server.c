@@ -17,11 +17,13 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,11 +31,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
 #include "tmux.h"
+
+#ifdef _WIN32
+#include "compat/win32-ipc.h"
+#include "compat/win32-socketpair.h"
+#endif
 
 /*
  * Main server functions.
@@ -42,11 +51,14 @@
 struct clients		 clients;
 
 struct tmuxproc		*server_proc;
-static int		 server_fd = -1;
+static imsg_fd_t	 server_fd = (imsg_fd_t)-1;
 static uint64_t		 server_client_flags;
 static int		 server_exit;
 static struct event	 server_ev_accept;
 static struct event	 server_ev_tidy;
+#ifdef _WIN32
+static struct win32_ipc_listener server_ipc;
+#endif
 
 struct cmd_find_state	 marked_pane;
 
@@ -57,11 +69,15 @@ time_t			 current_time;
 
 static int	server_loop(void);
 static void	server_send_exit(void);
-static void	server_accept(int, short, void *);
+static void	server_accept(evutil_socket_t, short, void *);
 static void	server_signal(int);
+#ifndef _WIN32
 static void	server_child_signal(void);
+#endif
 static void	server_child_exited(pid_t, int);
+#ifndef _WIN32
 static void	server_child_stopped(pid_t, int);
+#endif
 
 /* Set marked pane. */
 void
@@ -103,9 +119,33 @@ server_check_marked(void)
 }
 
 /* Create server socket. */
-int
+imsg_fd_t
 server_create_socket(uint64_t flags, char **cause)
 {
+#ifdef _WIN32
+	struct win32_ipc_listener listener;
+
+	(void)flags;
+	memset(&listener, 0, sizeof listener);
+	listener.socket = (uintptr_t)-1;
+
+	if (win32_ipc_listen(socket_path, &listener) != 0)
+		goto fail;
+	if (win32_socket_set_blocking(listener.socket, 0) != 0)
+		goto fail;
+	win32_ipc_listener_close(&server_ipc);
+	server_ipc = listener;
+	return (server_ipc.socket);
+
+fail:
+	if (cause != NULL) {
+		xasprintf(cause, "error creating %s (Windows error %lu, "
+		    "Winsock error %d)", socket_path, GetLastError(),
+		    WSAGetLastError());
+	}
+	win32_ipc_listener_close(&listener);
+	return ((imsg_fd_t)-1);
+#else
 	struct sockaddr_un	sa;
 	size_t			size;
 	mode_t			mask;
@@ -151,11 +191,12 @@ fail:
 		    strerror(errno));
 	}
 	return (-1);
+#endif
 }
 
 /* Tidy up every hour. */
 static void
-server_tidy_event(__unused int fd, __unused short events, __unused void *data)
+server_tidy_event(__unused evutil_socket_t fd, __unused short events, __unused void *data)
 {
     struct timeval	tv = { .tv_sec = 3600 };
     uint64_t		t = get_timer();
@@ -177,17 +218,23 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
     int lockfd, char *lockfile)
 {
 	int		 fd;
+#ifndef _WIN32
 	sigset_t	 set, oldset;
+#endif
 	struct client	*c = NULL;
 	char		*cause = NULL;
 	struct timeval	 tv = { .tv_sec = 3600 };
 
+#ifndef _WIN32
 	sigfillset(&set);
 	sigprocmask(SIG_BLOCK, &set, &oldset);
+#endif
 
 	if (~flags & CLIENT_NOFORK) {
 		if (proc_fork_and_daemon(&fd) != 0) {
+#ifndef _WIN32
 			sigprocmask(SIG_SETMASK, &oldset, NULL);
+#endif
 			return (fd);
 		}
 	}
@@ -199,7 +246,9 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
 	server_proc = proc_start("server");
 
 	proc_set_signals(server_proc, server_signal);
+#ifndef _WIN32
 	sigprocmask(SIG_SETMASK, &oldset, NULL);
+#endif
 
 	if (log_get_level() > 1)
 		tty_create_log();
@@ -252,6 +301,11 @@ server_start(struct tmuxproc *client, uint64_t flags, struct event_base *base,
 
 	server_add_accept(0);
 	proc_loop(server_proc, server_loop);
+
+#ifdef _WIN32
+	win32_ipc_listener_close(&server_ipc);
+	server_fd = (imsg_fd_t)-1;
+#endif
 
 	job_kill_all();
 	status_prompt_save_history();
@@ -328,10 +382,21 @@ server_send_exit(void)
 		session_destroy(s, 1, __func__);
 }
 
+/* Exit the server without going through a POSIX signal. */
+void
+server_shutdown(void)
+{
+	server_exit = 1;
+	server_send_exit();
+}
+
 /* Update socket execute permissions based on whether sessions are attached. */
 void
 server_update_socket(void)
 {
+#ifdef _WIN32
+	return;
+#else
 	struct session	*s;
 	static int	 last = -1;
 	int		 n, mode;
@@ -362,21 +427,42 @@ server_update_socket(void)
 			mode &= ~(S_IXUSR|S_IXGRP|S_IXOTH);
 		chmod(socket_path, mode);
 	}
+#endif
 }
 
 /* Callback for server socket. */
 static void
-server_accept(int fd, short events, __unused void *data)
+server_accept(evutil_socket_t fd, short events, __unused void *data)
 {
+#ifdef _WIN32
+	imsg_fd_t		 newfd;
+	int			 error;
+#else
 	struct sockaddr_storage	 sa;
 	socklen_t		 slen = sizeof sa;
 	int			 newfd;
+#endif
 	struct client		*c;
 
 	server_add_accept(0);
 	if (!(events & EV_READ))
 		return;
 
+#ifdef _WIN32
+	(void)fd;
+	if (win32_ipc_accept(&server_ipc, &newfd) != 0) {
+		error = WSAGetLastError();
+		if (error == WSAEWOULDBLOCK || error == WSAEINTR ||
+		    error == WSAECONNABORTED || error == WSAEACCES)
+			return;
+		if (error == WSAEMFILE) {
+			server_add_accept(1);
+			return;
+		}
+		fatalx("accept failed: Windows error %lu, Winsock error %d",
+		    GetLastError(), error);
+	}
+#else
 	newfd = accept(fd, (struct sockaddr *) &sa, &slen);
 	if (newfd == -1) {
 		if (errno == EAGAIN || errno == EINTR || errno == ECONNABORTED)
@@ -388,9 +474,14 @@ server_accept(int fd, short events, __unused void *data)
 		}
 		fatal("accept failed");
 	}
+#endif
 
 	if (server_exit) {
+#ifdef _WIN32
+		win32_socket_close(newfd);
+#else
 		close(newfd);
+#endif
 		return;
 	}
 	c = server_client_create(newfd);
@@ -409,7 +500,7 @@ server_add_accept(int timeout)
 {
 	struct timeval tv = { timeout, 0 };
 
-	if (server_fd == -1)
+	if (server_fd == (imsg_fd_t)-1)
 		return;
 
 	if (event_initialized(&server_ev_accept))
@@ -430,14 +521,17 @@ server_add_accept(int timeout)
 static void
 server_signal(int sig)
 {
-	int	fd;
+#ifdef _WIN32
+	if (sig == SIGINT || sig == SIGTERM)
+		server_shutdown();
+#else
+	imsg_fd_t	fd;
 
 	log_debug("%s: %s", __func__, strsignal(sig));
 	switch (sig) {
 	case SIGINT:
 	case SIGTERM:
-		server_exit = 1;
-		server_send_exit();
+		server_shutdown();
 		break;
 	case SIGCHLD:
 		server_child_signal();
@@ -445,8 +539,10 @@ server_signal(int sig)
 	case SIGUSR1:
 		event_del(&server_ev_accept);
 		fd = server_create_socket(server_client_flags, NULL);
-		if (fd != -1) {
+		if (fd != (imsg_fd_t)-1) {
+#ifndef _WIN32
 			close(server_fd);
+#endif
 			server_fd = fd;
 			server_update_socket();
 		}
@@ -456,9 +552,11 @@ server_signal(int sig)
 		proc_toggle_log(server_proc);
 		break;
 	}
+#endif
 }
 
 /* Handle SIGCHLD. */
+#ifndef _WIN32
 static void
 server_child_signal(void)
 {
@@ -480,6 +578,7 @@ server_child_signal(void)
 			server_child_exited(pid, status);
 	}
 }
+#endif
 
 /* Handle exited children. */
 static void
@@ -507,6 +606,7 @@ server_child_exited(pid_t pid, int status)
 }
 
 /* Handle stopped children. */
+#ifndef _WIN32
 static void
 server_child_stopped(pid_t pid, int status)
 {
@@ -526,6 +626,7 @@ server_child_stopped(pid_t pid, int status)
 	}
 	job_check_died(pid, status);
 }
+#endif
 
 /* Add to message log. */
 void

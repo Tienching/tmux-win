@@ -19,11 +19,15 @@
 #include <sys/types.h>
 
 #include <ctype.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include "tmux.h"
 
@@ -565,12 +569,20 @@ cmdq_add_message(struct cmdq_item *item)
 	const char		*key;
 	char			*tmp;
 	uid_t                    uid;
+#ifndef _WIN32
 	struct passwd		*pw;
+#endif
 	char                    *user = NULL;
 
 	tmp = cmd_print(item->cmd);
 	if (c != NULL) {
 		uid = proc_get_peer_uid(c->peer);
+#ifdef _WIN32
+		if (uid != (uid_t)-1 && uid != TMUX_WIN32_OWNER_UID)
+			user = xstrdup("[unknown]");
+		else
+			user = xstrdup("");
+#else
 		if (uid != (uid_t)-1 && uid != getuid()) {
 			if ((pw = getpwuid(uid)) != NULL)
 				xasprintf(&user, "[%s]", pw->pw_name);
@@ -578,6 +590,7 @@ cmdq_add_message(struct cmdq_item *item)
 				user = xstrdup("[unknown]");
 		} else
 			user = xstrdup("");
+#endif
 		if (c->session != NULL && state->event.key != KEYC_NONE) {
 			key = key_string_lookup_key(state->event.key, 0);
 			server_add_message("%s%s key %s: %s", c->name, user,

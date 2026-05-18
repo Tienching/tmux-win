@@ -24,9 +24,9 @@
 
 static int	alerts_fired;
 
-static void	alerts_timer(int, short, void *);
+static void	alerts_timer(evutil_socket_t, short, void *);
 static int	alerts_enabled(struct window *, int);
-static void	alerts_callback(int, short, void *);
+static void	alerts_callback(evutil_socket_t, short, void *);
 static void	alerts_reset(struct window *);
 
 static int	alerts_action_applies(struct winlink *, const char *);
@@ -40,7 +40,7 @@ static void	alerts_set_message(struct winlink *, const char *,
 static TAILQ_HEAD(, window) alerts_list = TAILQ_HEAD_INITIALIZER(alerts_list);
 
 static void
-alerts_timer(__unused int fd, __unused short events, void *arg)
+alerts_timer(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct window	*w = arg;
 
@@ -49,7 +49,7 @@ alerts_timer(__unused int fd, __unused short events, void *arg)
 }
 
 static void
-alerts_callback(__unused int fd, __unused short events, __unused void *arg)
+alerts_callback(__unused evutil_socket_t fd, __unused short events, __unused void *arg)
 {
 	struct window	*w, *w1;
 	int		 alerts;

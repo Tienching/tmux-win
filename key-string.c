@@ -60,6 +60,7 @@ static const struct {
 	{ "BTab",	KEYC_BTAB },
 	{ "Space",	' ' },
 	{ "BSpace",	KEYC_BSPACE },
+	{ "Break",	KEYC_BREAK|KEYC_IMPLIED_META },
 
 	/*
 	 * C0 control characters, with the exception of Tab, Enter,

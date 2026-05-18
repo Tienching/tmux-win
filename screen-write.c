@@ -77,7 +77,7 @@ screen_write_free_citem(struct screen_write_citem *ci)
 }
 
 static void
-screen_write_offset_timer(__unused int fd, __unused short events, void *data)
+screen_write_offset_timer(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct window	*w = data;
 
@@ -898,7 +898,7 @@ screen_write_mode_clear(struct screen_write_ctx *ctx, int mode)
 
 /* Sync timeout callback. */
 static void
-screen_write_sync_callback(__unused int fd, __unused short events, void *arg)
+screen_write_sync_callback(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct window_pane	*wp = arg;
 

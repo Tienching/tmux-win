@@ -17,8 +17,10 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
 #include <sys/uio.h>
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,13 +31,19 @@
 
 #include "tmux.h"
 
-static void	server_client_free(int, short, void *);
+#ifdef _WIN32
+#include "compat/win32-handle.h"
+#include "compat/win32-socketpair.h"
+#include "compat/win32-stdio.h"
+#endif
+
+static void	server_client_free(evutil_socket_t, short, void *);
 static void	server_client_check_pane_resize(struct window_pane *);
 static void	server_client_check_pane_buffer(struct window_pane *);
 static void	server_client_check_window_resize(struct window *);
 static key_code	server_client_check_mouse(struct client *, struct key_event *);
-static void	server_client_repeat_timer(int, short, void *);
-static void	server_client_click_timer(int, short, void *);
+static void	server_client_repeat_timer(evutil_socket_t, short, void *);
+static void	server_client_click_timer(evutil_socket_t, short, void *);
 static void	server_client_check_exit(struct client *);
 static void	server_client_check_redraw(struct client *);
 static void	server_client_check_modes(struct client *);
@@ -80,7 +88,7 @@ server_client_how_many(void)
 
 /* Overlay timer callback. */
 static void
-server_client_overlay_timer(__unused int fd, __unused short events, void *data)
+server_client_overlay_timer(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	server_client_clear_overlay(data);
 }
@@ -284,11 +292,15 @@ server_client_is_default_key_table(struct client *c, struct key_table *table)
 
 /* Create a new client. */
 struct client *
-server_client_create(int fd)
+server_client_create(imsg_fd_t fd)
 {
 	struct client	*c;
 
+#ifdef _WIN32
+	win32_socket_set_blocking(fd, 0);
+#else
 	setblocking(fd, 0);
+#endif
 
 	c = xcalloc(1, sizeof *c);
 	c->references = 1;
@@ -302,6 +314,11 @@ server_client_create(int fd)
 
 	c->fd = -1;
 	c->out_fd = -1;
+#ifdef _WIN32
+	c->win32_fd = (uintptr_t)INVALID_SOCKET;
+	c->win32_out_fd = (uintptr_t)INVALID_SOCKET;
+	c->win32_stdin_console = 0;
+#endif
 
 	c->queue = cmdq_new();
 	RB_INIT(&c->windows);
@@ -329,15 +346,42 @@ server_client_create(int fd)
 	return (c);
 }
 
+#ifdef _WIN32
+static int
+server_client_open_win32_stdio(struct client *c)
+{
+	if (c->win32_stdio_bridge != NULL)
+		return (0);
+	if (c->fd == -1 || c->out_fd == -1)
+		return (-1);
+
+	c->win32_stdio_bridge = xcalloc(1, sizeof(struct win32_stdio_bridge));
+	if (win32_stdio_bridge_open(c->win32_stdio_bridge, c->fd, c->out_fd,
+	    &c->win32_fd, &c->win32_out_fd, c->win32_stdin_console) == 0) {
+		c->fd = c->out_fd = -1;
+		return (0);
+	}
+
+	c->fd = c->out_fd = -1;
+	free(c->win32_stdio_bridge);
+	c->win32_stdio_bridge = NULL;
+	c->win32_fd = c->win32_out_fd = (uintptr_t)INVALID_SOCKET;
+	return (-1);
+}
+#endif
+
 /* Open client terminal if needed. */
 int
 server_client_open(struct client *c, char **cause)
 {
+#ifndef _WIN32
 	const char	*ttynam = _PATH_TTY;
+#endif
 
 	if (c->flags & CLIENT_CONTROL)
 		return (0);
 
+#ifndef _WIN32
 	if (strcmp(c->ttyname, ttynam) == 0||
 	    ((isatty(STDIN_FILENO) &&
 	    (ttynam = ttyname(STDIN_FILENO)) != NULL &&
@@ -351,6 +395,7 @@ server_client_open(struct client *c, char **cause)
 		xasprintf(cause, "can't use %s", c->ttyname);
 		return (-1);
 	}
+#endif
 
 	if (!(c->flags & CLIENT_TERMINAL)) {
 		*cause = xstrdup("not a terminal");
@@ -464,6 +509,15 @@ server_client_lost(struct client *c)
 		control_stop(c);
 	if (c->flags & CLIENT_TERMINAL)
 		tty_free(&c->tty);
+#ifdef _WIN32
+	if (c->win32_stdio_bridge != NULL) {
+		win32_stdio_bridge_close(c->win32_stdio_bridge);
+		free(c->win32_stdio_bridge);
+		c->win32_stdio_bridge = NULL;
+		c->win32_fd = (uintptr_t)INVALID_SOCKET;
+		c->win32_out_fd = (uintptr_t)INVALID_SOCKET;
+	}
+#endif
 	free(c->ttyname);
 	free(c->clipboard_panes);
 
@@ -524,7 +578,7 @@ server_client_unref(struct client *c)
 
 /* Free dead client. */
 static void
-server_client_free(__unused int fd, __unused short events, void *arg)
+server_client_free(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct client	*c = arg;
 
@@ -586,8 +640,13 @@ server_client_exec(struct client *c, const char *cmd)
 		shell = options_get_string(s->options, "default-shell");
 	else
 		shell = options_get_string(global_s_options, "default-shell");
-	if (!checkshell(shell))
+	if (!checkshell(shell)) {
+#ifdef _WIN32
+		shell = get_default_shell();
+#else
 		shell = _PATH_BSHELL;
+#endif
+	}
 	shellsize = strlen(shell) + 1;
 
 	msg = xmalloc(cmdsize + shellsize);
@@ -1493,7 +1552,11 @@ server_client_loop(void)
 	 */
 	RB_FOREACH(w, windows, &windows) {
 		TAILQ_FOREACH(wp, &w->panes, entry) {
-			if (wp->fd != -1) {
+			if (wp->fd != -1
+#ifdef _WIN32
+			    || wp->win32_pty != NULL
+#endif
+			    ) {
 				server_client_check_pane_resize(wp);
 				server_client_check_pane_buffer(wp);
 			}
@@ -1531,7 +1594,7 @@ server_client_check_window_resize(struct window *w)
 
 /* Resize timer event. */
 static void
-server_client_resize_timer(__unused int fd, __unused short events, void *data)
+server_client_resize_timer(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct window_pane	*wp = data;
 
@@ -1812,7 +1875,7 @@ server_client_reset_state(struct client *c)
 
 /* Repeat time callback. */
 static void
-server_client_repeat_timer(__unused int fd, __unused short events, void *data)
+server_client_repeat_timer(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct client	*c = data;
 
@@ -1825,7 +1888,7 @@ server_client_repeat_timer(__unused int fd, __unused short events, void *data)
 
 /* Double-click callback. */
 static void
-server_client_click_timer(__unused int fd, __unused short events, void *data)
+server_client_click_timer(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct client		*c = data;
 	struct key_event	*event;
@@ -1900,7 +1963,7 @@ server_client_check_exit(struct client *c)
 
 /* Redraw timer callback. */
 static void
-server_client_redraw_timer(__unused int fd, __unused short events,
+server_client_redraw_timer(__unused evutil_socket_t fd, __unused short events,
     __unused void *data)
 {
 	log_debug("redraw timer fired");
@@ -2183,14 +2246,44 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 		if (server_client_dispatch_command(c, imsg) != 0)
 			goto bad;
 		break;
+	case MSG_STDIN:
+#ifdef _WIN32
+		if (datalen == 0)
+			break;
+		if (c->win32_stdio_bridge == NULL ||
+		    win32_stdio_bridge_feed_input(c->win32_stdio_bridge,
+		    imsg->data, datalen) != 0)
+			goto bad;
+		break;
+#else
+		goto bad;
+#endif
 	case MSG_RESIZE:
+#ifdef _WIN32
+		if (c->flags & CLIENT_CONTROL) {
+			if (datalen == 0 || datalen == sizeof(struct msg_resize))
+				break;
+			goto bad;
+		}
+		if (datalen == sizeof(struct msg_resize)) {
+			struct msg_resize	data;
+
+			memcpy(&data, imsg->data, sizeof data);
+			tty_set_size(&c->tty, data.sx, data.sy, 0, 0);
+			tty_invalidate(&c->tty);
+		} else if (datalen == 0) {
+			tty_resize(&c->tty);
+		} else
+			goto bad;
+#else
 		if (datalen != 0)
 			goto bad;
 
 		if (c->flags & CLIENT_CONTROL)
 			break;
-		server_client_update_latest(c);
 		tty_resize(&c->tty);
+#endif
+		server_client_update_latest(c);
 		tty_repeat_requests(&c->tty, 0);
 		recalculate_sizes();
 		if (c->overlay_resize == NULL)
@@ -2375,11 +2468,14 @@ error:
 static int
 server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 {
-	const char	*data, *home;
+	const char	*data;
 	size_t		 datalen;
 	int		 flags, feat;
 	uint64_t	 longflags;
 	char		*name;
+#ifdef _WIN32
+	struct win32_handle_message handle;
+#endif
 
 	if (c->flags & CLIENT_IDENTIFIED)
 		return (-1);
@@ -2436,22 +2532,44 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 			return (-1);
 		if (access(data, X_OK) == 0)
 			c->cwd = xstrdup(data);
-		else if ((home = find_home()) != NULL)
-			c->cwd = xstrdup(home);
 		else
-			c->cwd = xstrdup("/");
+			c->cwd = xstrdup(find_default_cwd());
 		log_debug("client %p IDENTIFY_CWD %s", c, data);
 		break;
 	case MSG_IDENTIFY_STDIN:
+#ifdef _WIN32
+		if (datalen == sizeof handle) {
+			memcpy(&handle, data, sizeof handle);
+			if (handle.flags & WIN32_HANDLE_MESSAGE_CONSOLE)
+				c->win32_stdin_console = 1;
+			c->fd = win32_handle_message_to_fd(&handle,
+			    _O_RDONLY|_O_BINARY);
+		} else if (datalen == 0)
+			c->fd = -1;
+		else
+			return (-1);
+#else
 		if (datalen != 0)
 			return (-1);
 		c->fd = imsg_get_fd(imsg);
+#endif
 		log_debug("client %p IDENTIFY_STDIN %d", c, c->fd);
 		break;
 	case MSG_IDENTIFY_STDOUT:
+#ifdef _WIN32
+		if (datalen == sizeof handle) {
+			memcpy(&handle, data, sizeof handle);
+			c->out_fd = win32_handle_message_to_fd(&handle,
+			    _O_WRONLY|_O_BINARY);
+		} else if (datalen == 0)
+			c->out_fd = -1;
+		else
+			return (-1);
+#else
 		if (datalen != 0)
 			return (-1);
 		c->out_fd = imsg_get_fd(imsg);
+#endif
 		log_debug("client %p IDENTIFY_STDOUT %d", c, c->out_fd);
 		break;
 	case MSG_IDENTIFY_ENVIRON:
@@ -2493,18 +2611,42 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 #endif
 
 	if (c->flags & CLIENT_CONTROL)
+#ifdef _WIN32
+	{
+		if (server_client_open_win32_stdio(c) != 0) {
+			c->flags |= CLIENT_EXIT;
+			return (0);
+		}
 		control_start(c);
+	}
+#else
+		control_start(c);
+#endif
+#ifdef _WIN32
+	else if (server_client_open_win32_stdio(c) == 0) {
+#else
 	else if (c->fd != -1) {
+#endif
 		if (tty_init(&c->tty, c) != 0) {
+#ifdef _WIN32
+			win32_stdio_bridge_close(c->win32_stdio_bridge);
+			free(c->win32_stdio_bridge);
+			c->win32_stdio_bridge = NULL;
+			c->win32_fd = c->win32_out_fd =
+			    (uintptr_t)INVALID_SOCKET;
+#else
 			close(c->fd);
 			c->fd = -1;
+#endif
 		} else {
 			tty_resize(&c->tty);
 			c->flags |= CLIENT_TERMINAL;
 		}
+#ifndef _WIN32
 		if (c->out_fd != -1)
 			close(c->out_fd);
 		c->out_fd = -1;
+#endif
 	}
 
 	/* If pasting has taken too long, turn it off. */
@@ -2534,8 +2676,13 @@ server_client_dispatch_shell(struct client *c)
 	const char	*shell;
 
 	shell = options_get_string(global_s_options, "default-shell");
-	if (!checkshell(shell))
+	if (!checkshell(shell)) {
+#ifdef _WIN32
+		shell = get_default_shell();
+#else
 		shell = _PATH_BSHELL;
+#endif
+	}
 	proc_send(c->peer, MSG_SHELL, -1, shell, strlen(shell) + 1);
 
 	proc_kill_peer(c->peer);
@@ -2556,9 +2703,7 @@ server_client_get_cwd(struct client *c, struct session *s)
 		return (s->cwd);
 	if (c != NULL && (s = c->session) != NULL && s->cwd != NULL)
 		return (s->cwd);
-	if ((home = find_home()) != NULL)
-		return (home);
-	return ("/");
+	return (find_default_cwd());
 }
 
 /* Get control client flags. */

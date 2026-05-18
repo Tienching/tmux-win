@@ -17,14 +17,20 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 
 #include <ctype.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <fnmatch.h>
+#endif
 #include <libgen.h>
 #include <math.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include <regex.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -33,6 +39,19 @@
 #include <unistd.h>
 
 #include "tmux.h"
+
+#ifdef _WIN32
+static const char *
+format_win32_user_name(void)
+{
+	static char	name[256];
+	DWORD		size = sizeof name;
+
+	if (GetUserNameA(name, &size))
+		return (name);
+	return ("current-user");
+}
+#endif
 
 /*
  * Build a list of key-value pairs and use them to expand #{key} entries in a
@@ -916,10 +935,20 @@ format_cb_current_path(struct format_tree *ft)
 	if (wp == NULL)
 		return (NULL);
 
+#ifdef _WIN32
+	cwd = osdep_get_cwd_from_tty(wp->tty);
+	if (cwd == NULL) {
+		if (wp->cwd != NULL)
+			return (xstrdup(wp->cwd));
+		return (NULL);
+	}
+	return (cwd);
+#else
 	cwd = osdep_get_cwd(wp->fd);
 	if (cwd == NULL)
 		return (NULL);
 	return (xstrdup(cwd));
+#endif
 }
 
 /* Callback for history_bytes. */
@@ -1642,16 +1671,25 @@ static void *
 format_cb_client_user(struct format_tree *ft)
 {
 	uid_t		 uid;
+#ifndef _WIN32
 	struct passwd	*pw;
+#endif
 
 	if (ft->c != NULL) {
 		if (ft->c->user != NULL)
 			return (xstrdup(ft->c->user));
 		uid = proc_get_peer_uid(ft->c->peer);
+#ifdef _WIN32
+		if (uid == TMUX_WIN32_OWNER_UID) {
+			ft->c->user = xstrdup(format_win32_user_name());
+			return (xstrdup(ft->c->user));
+		}
+#else
 		if (uid != (uid_t)-1 && (pw = getpwuid(uid)) != NULL) {
 			ft->c->user = xstrdup(pw->pw_name);
 			return (xstrdup(ft->c->user));
 		}
+#endif
 	}
 	return (NULL);
 }
@@ -3106,7 +3144,11 @@ format_cb_tree_mode_format(__unused struct format_tree *ft)
 static void *
 format_cb_uid(__unused struct format_tree *ft)
 {
+#ifdef _WIN32
+	return (format_printf("%ld", (long)TMUX_WIN32_OWNER_UID));
+#else
 	return (format_printf("%ld", (long)getuid()));
+#endif
 }
 
 /* Callback for user. */
@@ -3114,10 +3156,17 @@ static void *
 format_cb_user(__unused struct format_tree *ft)
 {
 	static char	*cached;
+#ifndef _WIN32
 	struct passwd	*pw;
+#endif
 
+#ifdef _WIN32
+	if (cached == NULL)
+		cached = xstrdup(format_win32_user_name());
+#else
 	if (cached == NULL && (pw = getpwuid(getuid())) != NULL)
 		cached = xstrdup(pw->pw_name);
+#endif
 	if (cached != NULL)
 		return (xstrdup(cached));
 	return (NULL);

@@ -20,12 +20,16 @@
 #define TMUX_H
 
 #include <sys/time.h>
+#ifndef _WIN32
 #include <sys/uio.h>
+#endif
 
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <wchar.h>
 
 #ifdef HAVE_UTEMPTER
@@ -36,7 +40,9 @@
 #include "tmux-protocol.h"
 #include "xmalloc.h"
 
+#ifndef _WIN32
 extern char   **environ;
+#endif
 
 struct args;
 struct args_command_state;
@@ -81,7 +87,11 @@ struct winlink;
 
 /* Default configuration files and socket paths. */
 #ifndef TMUX_CONF
+#ifdef _WIN32
+#define TMUX_CONF "%PROGRAMDATA%\\tmux\\tmux.conf;%APPDATA%\\tmux\\tmux.conf;~\\.tmux.conf"
+#else
 #define TMUX_CONF "/etc/tmux.conf:~/.tmux.conf"
+#endif
 #endif
 #ifndef TMUX_SOCK
 #define TMUX_SOCK "$TMUX_TMPDIR:" _PATH_TMP
@@ -90,10 +100,18 @@ struct winlink;
 #define TMUX_SOCK_PERM (7 /* o+rwx */)
 #endif
 #ifndef TMUX_TERM
+#ifdef _WIN32
+#define TMUX_TERM "tmux-win32"
+#else
 #define TMUX_TERM "screen"
 #endif
+#endif
 #ifndef TMUX_LOCK_CMD
+#ifdef _WIN32
+#define TMUX_LOCK_CMD "rundll32.exe user32.dll,LockWorkStation"
+#else
 #define TMUX_LOCK_CMD "lock -np"
+#endif
 #endif
 
 /* Minimum layout cell size, NOT including border lines. */
@@ -345,6 +363,7 @@ enum {
 
 	/* Backspace key. */
 	KEYC_BSPACE,
+	KEYC_BREAK,
 
 	/* Function keys. */
 	KEYC_F1,
@@ -1295,6 +1314,12 @@ struct window_pane {
 	int		 fd;
 	struct bufferevent *event;
 
+#ifdef _WIN32
+	uintptr_t	 win32_socket;
+	void		*win32_pty;
+	struct event	 win32_pane_poll_event;
+#endif
+
 	struct window_pane_offset offset;
 	size_t		 base_offset;
 
@@ -1313,6 +1338,10 @@ struct window_pane {
 	int		 pipe_fd;
 	pid_t		 pipe_pid;
 	struct bufferevent *pipe_event;
+#ifdef _WIN32
+	uintptr_t	 win32_pipe_socket;
+	void		*win32_pipe_process;
+#endif
 	struct window_pane_offset pipe_offset;
 
 	struct screen	*screen;
@@ -2015,6 +2044,12 @@ struct client {
 	pid_t			 pid;
 	int			 fd;
 	int			 out_fd;
+#ifdef _WIN32
+	uintptr_t		 win32_fd;
+	uintptr_t		 win32_out_fd;
+	void			*win32_stdio_bridge;
+	int			 win32_stdin_console;
+#endif
 	struct event		 event;
 	int			 retval;
 
@@ -2372,6 +2407,9 @@ extern const char	*shell_command;
 extern int		 ptm_fd;
 extern const char	*shell_command;
 int		 checkshell(const char *);
+const char	*get_default_shell(void);
+int		 path_is_absolute(const char *);
+int		 path_is_directory(const char *);
 void		 setblocking(int, int);
 char 		*shell_argv0(const char *, int);
 uint64_t	 get_timer(void);
@@ -2379,6 +2417,7 @@ char		*clean_name(const char *, const char *);
 const char	*sig2name(int);
 const char	*find_cwd(void);
 const char	*find_home(void);
+const char	*find_default_cwd(void);
 const char	*getversion(void);
 
 /* proc.c */
@@ -2389,7 +2428,7 @@ void	proc_loop(struct tmuxproc *, int (*)(void));
 void	proc_exit(struct tmuxproc *);
 void	proc_set_signals(struct tmuxproc *, void(*)(int));
 void	proc_clear_signals(struct tmuxproc *, int);
-struct tmuxpeer *proc_add_peer(struct tmuxproc *, int,
+struct tmuxpeer *proc_add_peer(struct tmuxproc *, imsg_fd_t,
 	    void (*)(struct imsg *, void *), void *);
 void	proc_remove_peer(struct tmuxpeer *);
 void	proc_kill_peer(struct tmuxpeer *);
@@ -2404,6 +2443,7 @@ extern struct client *cfg_client;
 extern char **cfg_files;
 extern u_int cfg_nfiles;
 extern int cfg_quiet;
+extern int cfg_user_files;
 void	start_cfg(void);
 int	load_cfg(const char *, struct client *, struct cmdq_item *,
             struct cmd_find_state *, int, struct cmdq_item **);
@@ -2604,6 +2644,10 @@ struct job	*job_run(const char *, int, char **, struct environ *,
 		     job_complete_cb, job_free_cb, void *, int, int, int);
 void		 job_free(struct job *);
 int		 job_transfer(struct job *, pid_t *, char *, size_t);
+#ifdef _WIN32
+int		 job_transfer_win32(struct job *, struct window_pane *, pid_t *,
+		     char *, size_t);
+#endif
 void		 job_resize(struct job *, u_int, u_int);
 void		 job_check_died(pid_t, int);
 int		 job_get_status(struct job *);
@@ -3025,10 +3069,11 @@ int	 server_is_marked(struct session *, struct winlink *,
 int	 server_check_marked(void);
 int	 server_start(struct tmuxproc *, uint64_t, struct event_base *, int,
 	     char *);
+void	 server_shutdown(void);
 void	 server_update_socket(void);
 void	 server_add_accept(int);
 void printflike(1, 2) server_add_message(const char *, ...);
-int	 server_create_socket(uint64_t, char **);
+imsg_fd_t server_create_socket(uint64_t, char **);
 
 /* server-client.c */
 RB_PROTOTYPE(client_windows, client_window, entry, server_client_window_cmp);
@@ -3045,7 +3090,7 @@ void	 server_client_set_key_table(struct client *, const char *);
 const char *server_client_get_key_table(struct client *);
 int	 server_client_check_nested(struct client *);
 int	 server_client_handle_key(struct client *, struct key_event *);
-struct client *server_client_create(int);
+struct client *server_client_create(imsg_fd_t);
 int	 server_client_open(struct client *, char **);
 void	 server_client_unref(struct client *);
 void	 server_client_set_session(struct client *, struct session *);
@@ -3682,8 +3727,8 @@ void		 session_theme_changed(struct session *);
 void		 session_update_history(struct session *);
 
 /* utf8.c */
-enum utf8_state	 utf8_towc (const struct utf8_data *, wchar_t *);
-enum utf8_state	 utf8_fromwc(wchar_t wc, struct utf8_data *);
+enum utf8_state	 utf8_towc (const struct utf8_data *, utf8_wchar *);
+enum utf8_state	 utf8_fromwc(utf8_wchar, struct utf8_data *);
 void		 utf8_update_width_cache(void);
 utf8_char	 utf8_build_one(u_char);
 enum utf8_state	 utf8_from_data(const struct utf8_data *, utf8_char *);
@@ -3709,6 +3754,9 @@ int		 utf8_cstrhas(const char *, const struct utf8_data *);
 /* osdep-*.c */
 char		*osdep_get_name(int, char *);
 char		*osdep_get_cwd(int);
+#ifdef _WIN32
+char		*osdep_get_cwd_from_tty(const char *);
+#endif
 struct event_base *osdep_event_init(void);
 
 /* utf8-combined.c */

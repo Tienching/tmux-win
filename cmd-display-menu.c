@@ -453,8 +453,13 @@ cmd_display_popup_exec(struct cmd *self, struct cmdq_item *item)
 		if (count <= 1 && (shellcmd == NULL || *shellcmd == '\0')) {
 			shellcmd = NULL;
 			shell = options_get_string(s->options, "default-shell");
-			if (!checkshell(shell))
+			if (!checkshell(shell)) {
+#ifdef _WIN32
+				shell = get_default_shell();
+#else
 				shell = _PATH_BSHELL;
+#endif
+			}
 			cmd_append_argv(&argc, &argv, shell);
 		} else
 			args_to_vector(args, &argc, &argv);

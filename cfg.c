@@ -33,6 +33,7 @@ static u_int		  cfg_ncauses;
 static struct cmdq_item	 *cfg_item;
 
 int                       cfg_quiet = 1;
+int			  cfg_user_files;
 char                    **cfg_files;
 u_int                     cfg_nfiles;
 

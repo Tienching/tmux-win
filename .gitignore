@@ -17,8 +17,13 @@ config.log
 config.status
 configure
 core
+dist/
 etc/
 fuzz/*-fuzzer
 tags
 tmux
+tmux.exe
+tmux-client-*.log
+tmux-out-*.log
+tmux-server-*.log
 tmux.1.*

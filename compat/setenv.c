@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "compat.h"
+#include "xmalloc.h"
 
 int
 setenv(const char *name, const char *value, __unused int overwrite)
@@ -38,7 +39,7 @@ unsetenv(const char *name)
 	int	namelen;
 
 	namelen = strlen(name);
-	for (envptr = environ; *envptr != NULL; envptr++) {
+	for (envptr = TMUX_ENVIRON; *envptr != NULL; envptr++) {
 		if (strncmp(name, *envptr, namelen) == 0 &&
 		    ((*envptr)[namelen] == '=' || (*envptr)[namelen] == '\0'))
 			break;

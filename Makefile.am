@@ -5,7 +5,42 @@ CLEANFILES = tmux.1.mdoc tmux.1.man cmd-parse.c
 # Distribution tarball options.
 EXTRA_DIST = \
 	CHANGES README README.ja COPYING example_tmux.conf \
-	osdep-*.c mdoc2man.awk tmux.1
+	osdep-*.c mdoc2man.awk tmux.1 \
+	windows/audit-command-surface.ps1 \
+	windows/build-mingw.ps1 \
+	windows/client-lifecycle-stress.ps1 \
+	windows/completion-audit.ps1 \
+	windows/config-parser-stress.ps1 \
+	windows/console-attach-probe.ps1 \
+	windows/console-attach-soak.ps1 \
+	windows/diagnose-console.ps1 \
+	windows/hosted-ci-audit.ps1 \
+	windows/install-portable.ps1 \
+	windows/ipc-acl-stress.ps1 \
+	windows/ipc-boundary-audit.ps1 \
+	windows/job-stress.ps1 \
+	windows/linux-behavior-parity.ps1 \
+	windows/linux-parity-matrix.ps1 \
+	windows/package-mingw.ps1 \
+	windows/package-msix.ps1 \
+	windows/PARITY-AUDIT.md \
+	windows/PORTING.md \
+	windows/probe-mingw.ps1 \
+	windows/RELEASE.md \
+	windows/release-check.ps1 \
+	windows/respawn-stress.ps1 \
+	windows/signing-audit.ps1 \
+	windows/smoke-runtime.ps1 \
+	windows/soak-runtime.ps1 \
+	windows/source-state-audit.ps1 \
+	windows/signal-matrix-stress.ps1 \
+	windows/stress-runtime.ps1 \
+	windows/VERIFY.md \
+	windows/verify-portable.ps1 \
+	windows/verify-release-artifacts.ps1 \
+	windows/visual-console-verify.ps1 \
+	windows/visual-terminal-verify.ps1 \
+	windows/write-release-notes.ps1
 dist_EXTRA_tmux_SOURCES = compat/*.[ch]
 
 # Preprocessor flags.
@@ -79,6 +114,16 @@ endif
 # Set flags for Cygwin.
 if IS_CYGWIN
 AM_CPPFLAGS += -DTMUX_SOCK_PERM=0
+endif
+
+# Set flags for native Windows. This is currently only the platform hook for
+# the ConPTY compatibility work; the rest of the POSIX shim is still required.
+if IS_WINDOWS
+AM_CPPFLAGS += -I$(srcdir)/compat -DTMUX_SOCK_PERM=0 \
+	-D_WIN32_WINNT=0x0A00 \
+	-DNTDDI_VERSION=0x0A000006
+AM_CXXFLAGS += -std=gnu++11
+LDADD += -lws2_32
 endif
 
 # List of sources.
@@ -238,6 +283,36 @@ endif
 # Enable sixel support.
 if ENABLE_SIXEL
 dist_tmux_SOURCES += image.c image-sixel.c
+endif
+
+if IS_WINDOWS
+dist_tmux_SOURCES += \
+	compat/win32-clipboard.c \
+	compat/win32-clipboard.h \
+	compat/win32-command.c \
+	compat/win32-command.h \
+	compat/win32-conpty.c \
+	compat/win32-conpty.h \
+	compat/win32-environment.c \
+	compat/win32-environment.h \
+	compat/win32-fnmatch.c \
+	compat/win32-handle.c \
+	compat/win32-handle.h \
+	compat/win32-ipc.c \
+	compat/win32-ipc.h \
+	compat/win32-process.c \
+	compat/win32-process.h \
+	compat/win32-pty.c \
+	compat/win32-pty.h \
+	compat/win32-regex.cc \
+	compat/win32-regex.h \
+	compat/win32-spawn.c \
+	compat/win32-spawn.h \
+	compat/win32-stdio.c \
+	compat/win32-stdio.h \
+	compat/win32-socketpair.c \
+	compat/win32-socketpair.h \
+	compat/win32-time.c
 endif
 
 if NEED_FUZZING

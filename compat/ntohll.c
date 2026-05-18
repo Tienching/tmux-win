@@ -14,7 +14,6 @@
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <arpa/inet.h>
 #include <sys/types.h>
 
 #include "compat.h"
@@ -22,10 +21,10 @@
 uint64_t
 ntohll(uint64_t v)
 {
-    uint32_t b;
-    uint32_t t;
+	uint32_t	b;
+	uint32_t	t;
 
-    b = ntohl (v & 0xffffffff);
-    t = ntohl (v >> 32);
-    return ((uint64_t)b << 32 | t);
+	b = ntohl(v & 0xffffffff);
+	t = ntohl(v >> 32);
+	return ((uint64_t)b << 32 | t);
 }

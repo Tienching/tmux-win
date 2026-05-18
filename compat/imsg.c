@@ -17,18 +17,40 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <windows.h>
+#include <sys/types.h>
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#endif
 
 #include <errno.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
+#ifdef _WIN32
+#include "compat/queue.h"
+#else
 #include "compat.h"
+#endif
 #include "imsg.h"
+
+#ifdef _WIN32
+struct iovec {
+	void	*iov_base;
+	size_t	 iov_len;
+};
+#endif
 
 #define IMSG_ALLOW_FDPASS	0x01
 #define IMSG_FD_MARK		0x80000000U
@@ -36,13 +58,17 @@
 static struct ibuf	*imsg_parse_hdr(struct ibuf *, void *, int *);
 
 int
-imsgbuf_init(struct imsgbuf *imsgbuf, int fd)
+imsgbuf_init(struct imsgbuf *imsgbuf, imsg_fd_t fd)
 {
 	imsgbuf->w = msgbuf_new_reader(IMSG_HEADER_SIZE, imsg_parse_hdr,
 	    imsgbuf);
 	if (imsgbuf->w == NULL)
 		return (-1);
+#ifdef _WIN32
+	imsgbuf->pid = (pid_t)GetCurrentProcessId();
+#else
 	imsgbuf->pid = getpid();
+#endif
 	imsgbuf->maxsize = MAX_IMSGSIZE;
 	imsgbuf->fd = fd;
 	imsgbuf->flags = 0;

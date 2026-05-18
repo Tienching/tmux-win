@@ -23,7 +23,14 @@
 #define _IMSG_H_
 
 #include <sys/types.h>
+#include <stdint.h>
 #include <stddef.h>
+
+#ifdef _WIN32
+typedef uintptr_t imsg_fd_t;
+#else
+typedef int imsg_fd_t;
+#endif
 
 #define IBUF_READ_SIZE		65535
 #define IMSG_HEADER_SIZE	sizeof(struct imsg_hdr)
@@ -46,7 +53,7 @@ struct imsgbuf {
 	struct msgbuf		*w;
 	pid_t			 pid;
 	uint32_t		 maxsize;
-	int			 fd;
+	imsg_fd_t		 fd;
 	int			 flags;
 };
 
@@ -121,10 +128,10 @@ void		 msgbuf_free(struct msgbuf *);
 void		 msgbuf_clear(struct msgbuf *);
 void		 msgbuf_concat(struct msgbuf *, struct ibufqueue *);
 uint32_t	 msgbuf_queuelen(struct msgbuf *);
-int		 ibuf_write(int, struct msgbuf *);
-int		 msgbuf_write(int, struct msgbuf *);
-int		 ibuf_read(int, struct msgbuf *);
-int		 msgbuf_read(int, struct msgbuf *);
+int		 ibuf_write(imsg_fd_t, struct msgbuf *);
+int		 msgbuf_write(imsg_fd_t, struct msgbuf *);
+int		 ibuf_read(imsg_fd_t, struct msgbuf *);
+int		 msgbuf_read(imsg_fd_t, struct msgbuf *);
 struct ibuf	*msgbuf_get(struct msgbuf *);
 
 struct ibufqueue	*ibufq_new(void);
@@ -136,7 +143,7 @@ void		 ibufq_concat(struct ibufqueue *, struct ibufqueue *);
 void		 ibufq_flush(struct ibufqueue *);
 
 /* imsg.c */
-int	 imsgbuf_init(struct imsgbuf *, int);
+int	 imsgbuf_init(struct imsgbuf *, imsg_fd_t);
 void	 imsgbuf_allow_fdpass(struct imsgbuf *imsgbuf);
 int	 imsgbuf_set_maxsize(struct imsgbuf *, uint32_t);
 int	 imsgbuf_read(struct imsgbuf *);

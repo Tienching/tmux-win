@@ -18,7 +18,9 @@
 
 #include <sys/types.h>
 
+#ifndef _WIN32
 #include <fnmatch.h>
+#endif
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>

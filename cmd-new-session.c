@@ -22,7 +22,9 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <unistd.h>
 
 #include "tmux.h"
@@ -74,7 +76,10 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	struct session		*s, *as, *groupwith = NULL;
 	struct environ		*env;
 	struct options		*oo;
-	struct termios		 tio, *tiop;
+	struct termios		*tiop;
+#ifndef _WIN32
+	struct termios		 tio;
+#endif
 	struct session_group	*sg = NULL;
 	const char		*errstr, *template, *group, *tmp;
 	char			*cause, *cwd = NULL, *cp, *newname = NULL;
@@ -170,28 +175,30 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 		cwd = xstrdup(server_client_get_cwd(c, NULL));
 
 	/*
-	 * If this is a new client, check for nesting and save the termios
-	 * settings (part of which is used for new windows in this session).
+	 * If this is a new client, check for nesting and save the POSIX
+	 * termios settings (part of which is used for new windows in this
+	 * session). Windows console modes are handled by the stdio bridge.
 	 *
 	 * tcgetattr() is used rather than using tty.tio since if the client is
 	 * detached, tty_open won't be called. It must be done before opening
 	 * the terminal as that calls tcsetattr() to prepare for tmux taking
 	 * over.
 	 */
-	if (!detached &&
-	    !already_attached &&
-	    c->fd != -1 &&
-	    (~c->flags & CLIENT_CONTROL)) {
+	tiop = NULL;
+	if (!detached && !already_attached && (~c->flags & CLIENT_CONTROL)) {
 		if (server_client_check_nested(cmdq_get_client(item))) {
 			cmdq_error(item, "sessions should be nested with care, "
 			    "unset $TMUX to force");
 			goto fail;
 		}
-		if (tcgetattr(c->fd, &tio) != 0)
-			fatal("tcgetattr failed");
-		tiop = &tio;
-	} else
-		tiop = NULL;
+#ifndef _WIN32
+		if (c->fd != -1) {
+			if (tcgetattr(c->fd, &tio) != 0)
+				fatal("tcgetattr failed");
+			tiop = &tio;
+		}
+#endif
+	}
 
 	/* Open the terminal if necessary. */
 	if (!detached && !already_attached) {

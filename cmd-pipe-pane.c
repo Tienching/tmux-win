@@ -17,11 +17,15 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/socket.h>
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <signal.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -29,12 +33,23 @@
 
 #include "tmux.h"
 
+#ifdef _WIN32
+#include "compat/win32-command.h"
+#include "compat/win32-process.h"
+#include "compat/win32-socketpair.h"
+#include "compat/win32-spawn.h"
+#endif
+
 /*
  * Open pipe to redirect pane output. If already open, close first.
  */
 
 static enum cmd_retval	cmd_pipe_pane_exec(struct cmd *, struct cmdq_item *);
 
+static void cmd_pipe_pane_close(struct window_pane *);
+#ifdef _WIN32
+static const char *cmd_pipe_pane_win32_shell(struct session *);
+#endif
 static void cmd_pipe_pane_read_callback(struct bufferevent *, void *);
 static void cmd_pipe_pane_write_callback(struct bufferevent *, void *);
 static void cmd_pipe_pane_error_callback(struct bufferevent *, short, void *);
@@ -52,6 +67,59 @@ const struct cmd_entry cmd_pipe_pane_entry = {
 	.exec = cmd_pipe_pane_exec
 };
 
+static void
+cmd_pipe_pane_close(struct window_pane *wp)
+{
+	if (wp->pipe_fd == -1)
+		return;
+
+	bufferevent_free(wp->pipe_event);
+#ifdef _WIN32
+	win32_socket_close(wp->win32_pipe_socket);
+	if (wp->win32_pipe_process != NULL) {
+		win32_process_close((struct win32_process *)
+		    wp->win32_pipe_process);
+		free(wp->win32_pipe_process);
+		wp->win32_pipe_process = NULL;
+	}
+	wp->win32_pipe_socket = (uintptr_t)-1;
+#else
+	close(wp->pipe_fd);
+#endif
+	wp->pipe_fd = -1;
+}
+
+#ifdef _WIN32
+static const char *
+cmd_pipe_pane_win32_fallback_shell(void)
+{
+	const char	*shell;
+
+	shell = getenv("ComSpec");
+	if (shell != NULL && checkshell(shell))
+		return (shell);
+	shell = getenv("SHELL");
+	if (shell != NULL && checkshell(shell))
+		return (shell);
+	return (get_default_shell());
+}
+
+static const char *
+cmd_pipe_pane_win32_shell(struct session *s)
+{
+	const char	*shell;
+
+	if (s != NULL)
+		shell = options_get_string(s->options, "default-shell");
+	else
+		shell = options_get_string(global_s_options, "default-shell");
+	if (checkshell(shell))
+		return (shell);
+	return (cmd_pipe_pane_win32_fallback_shell());
+}
+
+#endif
+
 static enum cmd_retval
 cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 {
@@ -63,9 +131,21 @@ cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 	struct winlink			*wl = target->wl;
 	struct window_pane_offset	*wpo = &wp->pipe_offset;
 	char				*cmd;
-	int				 old_fd, pipe_fd[2], null_fd, in, out;
+	int				 old_fd, in, out;
+#ifndef _WIN32
+	int				 pipe_fd[2], null_fd;
+#endif
 	struct format_tree		*ft;
+#ifndef _WIN32
 	sigset_t			 set, oldset;
+#else
+	struct win32_spawn_options	 options;
+	struct win32_process		*process;
+	uintptr_t			 pipe_socket;
+	char				*argv[4];
+	const char			*shell, *cwd;
+	int				 spawn_argc;
+#endif
 
 	/* Do nothing if pane is dead. */
 	if (window_pane_exited(wp)) {
@@ -76,10 +156,7 @@ cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 	/* Destroy the old pipe. */
 	old_fd = wp->pipe_fd;
 	if (wp->pipe_fd != -1) {
-		bufferevent_free(wp->pipe_event);
-		close(wp->pipe_fd);
-		wp->pipe_fd = -1;
-
+		cmd_pipe_pane_close(wp);
 		if (window_pane_destroy_ready(wp)) {
 			server_destroy_pane(wp, 1);
 			return (CMD_RETURN_NORMAL);
@@ -108,11 +185,13 @@ cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 		out = 1;
 	}
 
+#ifndef _WIN32
 	/* Open the new pipe. */
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, pipe_fd) != 0) {
 		cmdq_error(item, "socketpair error: %s", strerror(errno));
 		return (CMD_RETURN_ERROR);
 	}
+#endif
 
 	/* Expand the command. */
 	ft = format_create(cmdq_get_client(item), item, FORMAT_NONE, 0);
@@ -120,6 +199,55 @@ cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 	cmd = format_expand_time(ft, args_string(args, 0));
 	format_free(ft);
 
+#ifdef _WIN32
+	shell = cmd_pipe_pane_win32_shell(s);
+	spawn_argc = win32_shell_command_argv(shell, cmd, argv);
+	cwd = server_client_get_cwd(tc, s);
+	if (!path_is_directory(cwd))
+		cwd = find_default_cwd();
+
+	process = xcalloc(1, sizeof *process);
+	memset(&options, 0, sizeof options);
+	options.argc = spawn_argc;
+	options.argv = argv;
+	options.cwd = cwd;
+
+	if (win32_spawn_process(&options, process, &pipe_socket, 0) != 0) {
+		cmdq_error(item, "spawn error: Windows error %lu",
+		    GetLastError());
+		free(process);
+		free(cmd);
+		return (CMD_RETURN_ERROR);
+	}
+	if (win32_socket_set_blocking(pipe_socket, 0) != 0) {
+		cmdq_error(item, "socket error: Windows error %lu",
+		    GetLastError());
+		win32_process_close(process);
+		free(process);
+		win32_socket_close(pipe_socket);
+		free(cmd);
+		return (CMD_RETURN_ERROR);
+	}
+
+	wp->pipe_fd = 0;
+	wp->pipe_pid = (pid_t)win32_process_id(process);
+	wp->win32_pipe_socket = pipe_socket;
+	wp->win32_pipe_process = process;
+	memcpy(wpo, &wp->offset, sizeof *wpo);
+
+	wp->pipe_event = bufferevent_new((evutil_socket_t)pipe_socket,
+	    cmd_pipe_pane_read_callback, cmd_pipe_pane_write_callback,
+	    cmd_pipe_pane_error_callback, wp);
+	if (wp->pipe_event == NULL)
+		fatalx("out of memory");
+	if (out)
+		bufferevent_enable(wp->pipe_event, EV_WRITE);
+	if (in)
+		bufferevent_enable(wp->pipe_event, EV_READ);
+
+	free(cmd);
+	return (CMD_RETURN_NORMAL);
+#else
 	/* Fork the child. */
 	sigfillset(&set);
 	sigprocmask(SIG_BLOCK, &set, &oldset);
@@ -188,6 +316,7 @@ cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 		free(cmd);
 		return (CMD_RETURN_NORMAL);
 	}
+#endif
 }
 
 static void
@@ -226,9 +355,7 @@ cmd_pipe_pane_error_callback(__unused struct bufferevent *bufev,
 
 	log_debug("%%%u pipe error", wp->id);
 
-	bufferevent_free(wp->pipe_event);
-	close(wp->pipe_fd);
-	wp->pipe_fd = -1;
+	cmd_pipe_pane_close(wp);
 
 	if (window_pane_destroy_ready(wp))
 		server_destroy_pane(wp, 1);

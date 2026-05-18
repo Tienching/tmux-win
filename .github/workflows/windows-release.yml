@@ -1,0 +1,332 @@
+name: 'Windows Release'
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag or ref to build'
+        required: true
+        type: string
+      create_release:
+        description: 'Create a GitHub release with the artifacts'
+        required: true
+        default: false
+        type: boolean
+      draft:
+        description: 'Create the GitHub release as a draft when create_release=true'
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: 'Mark the GitHub release as a prerelease'
+        required: true
+        default: true
+        type: boolean
+      sign_msix:
+        description: 'Sign the MSIX with TMUX_WINDOWS_CODESIGN_PFX_BASE64'
+        required: true
+        default: false
+        type: boolean
+      publisher:
+        description: 'MSIX Publisher, must match the signing certificate subject'
+        required: true
+        default: 'CN=tmux'
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            bison
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-libevent
+            mingw-w64-x86_64-pkgconf
+
+      - name: Audit source state
+        shell: powershell
+        run: .\windows\source-state-audit.ps1 -Output .\dist\source-state-audit.json -RequireClean
+
+      - name: Run Windows release gate
+        shell: powershell
+        env:
+          TMUX_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.TMUX_WINDOWS_CODESIGN_PFX_BASE64 }}
+          TMUX_WINDOWS_CODESIGN_PASSWORD: ${{ secrets.TMUX_WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
+          $certificatePath = ""
+          $releaseArgs = @(
+            "-CC", "C:\msys64\mingw64\bin\gcc.exe",
+            "-CXX", "C:\msys64\mingw64\bin\g++.exe",
+            "-Yacc", "C:\msys64\usr\bin\bison.exe",
+            "-RespawnIterations", "20",
+            "-IpcAclIterations", "3",
+            "-JobStressIterations", "10",
+            "-ClientStressIterations", "5",
+            "-SignalMatrixIterations", "3",
+            "-RunConfigStress",
+            "-StressIterations", "1",
+            "-SoakSeconds", "10",
+            "-ConsoleSoakSeconds", "10",
+            "-ConsoleReattachCycles", "2",
+            "-BuildMsix",
+            "-MsixPublisher", "${{ inputs.publisher }}"
+          )
+          if ("${{ inputs.sign_msix }}" -eq "true") {
+            if ([string]::IsNullOrWhiteSpace($env:TMUX_WINDOWS_CODESIGN_PFX_BASE64)) {
+              throw "TMUX_WINDOWS_CODESIGN_PFX_BASE64 secret is required when sign_msix=true."
+            }
+            $certificatePath = Join-Path $env:RUNNER_TEMP "tmux-codesign.pfx"
+            [IO.File]::WriteAllBytes($certificatePath,
+              [Convert]::FromBase64String($env:TMUX_WINDOWS_CODESIGN_PFX_BASE64))
+            $releaseArgs += @(
+              "-SignMsix",
+              "-MsixCertificatePath", $certificatePath,
+              "-MsixCertificatePassword", $env:TMUX_WINDOWS_CODESIGN_PASSWORD
+            )
+          }
+          try {
+            .\windows\release-check.ps1 @releaseArgs
+          } finally {
+            if ($certificatePath -and (Test-Path -LiteralPath $certificatePath)) {
+              Remove-Item -LiteralPath $certificatePath -Force
+            }
+          }
+
+      - name: Verify Windows release artifacts
+        shell: powershell
+        run: |
+          if ("${{ inputs.sign_msix }}" -eq "true") {
+            .\windows\verify-release-artifacts.ps1 -RequireSignedMsix
+          } else {
+            .\windows\verify-release-artifacts.ps1 -RequireMsix
+          }
+
+      - name: Audit Windows MSIX signing
+        shell: powershell
+        run: |
+          .\windows\signing-audit.ps1 `
+            -Msix .\dist\tmux-win32.msix `
+            -MsixSummary .\dist\tmux-win32.msix.json `
+            -Output .\dist\signing-audit.json
+
+      - name: Audit Windows IPC boundary
+        shell: powershell
+        run: |
+          .\windows\ipc-boundary-audit.ps1 `
+            -Tmux .\dist\tmux-win32-portable\tmux.exe `
+            -Output .\dist\ipc-boundary-audit.json
+
+      - name: Try Linux parity on WSL
+        shell: powershell
+        run: |
+          $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
+          if ($null -eq $wsl) {
+            Write-Host "WSL is not available on this runner; skipping Linux parity."
+            exit 0
+          }
+          & wsl.exe sh -lc 'command -v tmux >/dev/null'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WSL tmux is not available on this runner; skipping Linux parity."
+            exit 0
+          }
+          .\windows\linux-parity-matrix.ps1 `
+            -WindowsTmux .\dist\tmux-win32-portable\tmux.exe `
+            -Output .\dist\linux-parity-matrix.json
+          .\windows\linux-behavior-parity.ps1 `
+            -WindowsTmux .\dist\tmux-win32-portable\tmux.exe `
+            -Output .\dist\linux-behavior-parity.json
+
+      - name: Audit hosted CI history
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headSha = (& git rev-parse HEAD).Trim()
+          .\windows\hosted-ci-audit.ps1 `
+            -HeadSha $headSha `
+            -Output .\dist\hosted-ci-audit.json
+
+      - name: Write Windows completion audit
+        shell: powershell
+        run: |
+          $completionArgs = @(
+            "-SigningSummary", ".\dist\signing-audit.json",
+            "-IpcBoundarySummary", ".\dist\ipc-boundary-audit.json",
+            "-HostedCiSummary", ".\dist\hosted-ci-audit.json",
+            "-SourceStateSummary", ".\dist\source-state-audit.json",
+            "-HostedCiRunUrl", "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          )
+          if (Test-Path .\dist\linux-parity-matrix.json) {
+            $completionArgs += @(
+              "-LinuxParitySummary", ".\dist\linux-parity-matrix.json")
+          }
+          if (Test-Path .\dist\linux-behavior-parity.json) {
+            $completionArgs += @(
+              "-LinuxBehaviorSummary", ".\dist\linux-behavior-parity.json")
+          }
+          .\windows\completion-audit.ps1 @completionArgs
+
+      - name: Verify Windows extended evidence
+        shell: powershell
+        run: |
+          $verifyArgs = @(
+            "-RequireSigningAudit",
+            "-RequireCompletionAudit",
+            "-RequireIpcBoundaryAudit",
+            "-RequireHostedCiAudit",
+            "-RequireSourceStateAudit"
+          )
+          if ("${{ inputs.sign_msix }}" -eq "true") {
+            $verifyArgs += "-RequireSignedMsix"
+          } else {
+            $verifyArgs += "-RequireMsix"
+          }
+          if ("${{ inputs.create_release }}" -eq "true" -and "${{ inputs.draft }}" -ne "true") {
+            $verifyArgs += "-RequireCompletionComplete"
+            $verifyArgs += "-RequireHostedCiGreen"
+          }
+          if (Test-Path .\dist\linux-parity-matrix.json) {
+            $verifyArgs += "-RequireLinuxParity"
+          }
+          if (Test-Path .\dist\linux-behavior-parity.json) {
+            $verifyArgs += "-RequireLinuxBehaviorParity"
+          }
+          .\windows\verify-release-artifacts.ps1 @verifyArgs
+
+      - name: Write Windows release notes
+        shell: powershell
+        run: .\windows\write-release-notes.ps1
+
+      - name: Summarize Windows release artifacts
+        shell: powershell
+        run: |
+          $release = Get-Content .\dist\release-check.json -Raw | ConvertFrom-Json
+          $surface = Get-Content .\dist\command-surface.json -Raw | ConvertFrom-Json
+          $msix = Get-Content .\dist\tmux-win32.msix.json -Raw | ConvertFrom-Json
+          $signing = Get-Content .\dist\signing-audit.json -Raw | ConvertFrom-Json
+          $boundary = Get-Content .\dist\ipc-boundary-audit.json -Raw | ConvertFrom-Json
+          $hosted = Get-Content .\dist\hosted-ci-audit.json -Raw | ConvertFrom-Json
+          $source = Get-Content .\dist\source-state-audit.json -Raw | ConvertFrom-Json
+          $audit = Get-Content .\dist\completion-audit.json -Raw | ConvertFrom-Json
+          $linuxBehavior = "not run"
+          if (Test-Path .\dist\linux-behavior-parity.json) {
+            $linuxBehaviorSummary = Get-Content .\dist\linux-behavior-parity.json -Raw | ConvertFrom-Json
+            $linuxBehavior = "$($linuxBehaviorSummary.Status) ($($linuxBehaviorSummary.Passed) passed)"
+          }
+          @"
+          ## Windows tmux artifacts
+
+          | Item | Value |
+          | --- | --- |
+          | Ref | ${{ inputs.tag_name }} |
+          | Version | $($release.Version) |
+          | Portable zip SHA256 | $($release.ZipSha256) |
+          | MSIX SHA256 | $($msix.SHA256) |
+          | MSIX signed | $($msix.Signed) |
+          | Signing audit | $($signing.Status) |
+          | Commands | $($surface.CommandCount) |
+          | Global options | $($surface.GlobalOptionCount) |
+          | Server options | $($surface.ServerOptionCount) |
+          | Window options | $($surface.WindowOptionCount) |
+          | Key bindings | $($surface.KeyBindingCount) |
+          | IPC boundary audit | $($boundary.Status) |
+          | Linux behavior parity | $linuxBehavior |
+          | Hosted CI audit | $($hosted.Status) |
+          | Source state | dirty=$($source.IsDirty); head=$($source.HeadSha) |
+          | Completion audit | $($audit.Status) |
+          | Completion missing items | $(@($audit.Missing).Count) |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmux-win32-release
+          path: |
+            dist/tmux-win32-portable/**
+            dist/tmux-win32-portable.zip
+            dist/tmux-win32-portable.zip.sha256
+            dist/release-check.json
+            dist/command-surface.json
+            dist/tmux-win32.msix
+            dist/tmux-win32.msix.json
+            dist/windows-release-notes.md
+            dist/signing-audit.json
+            dist/ipc-boundary-audit.json
+            dist/linux-parity-matrix.json
+            dist/linux-behavior-parity.json
+            dist/hosted-ci-audit.json
+            dist/source-state-audit.json
+            dist/completion-audit.json
+
+      - name: Create GitHub release
+        if: ${{ inputs.create_release }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ("${{ inputs.draft }}" -ne "true" -and "${{ inputs.sign_msix }}" -ne "true") {
+            throw "Non-draft Windows releases require sign_msix=true."
+          }
+          if ("${{ inputs.draft }}" -ne "true") {
+            $completion = Get-Content .\dist\completion-audit.json -Raw | ConvertFrom-Json
+            $hosted = Get-Content .\dist\hosted-ci-audit.json -Raw | ConvertFrom-Json
+            $source = Get-Content .\dist\source-state-audit.json -Raw | ConvertFrom-Json
+            $signing = Get-Content .\dist\signing-audit.json -Raw | ConvertFrom-Json
+            if ($completion.Status -ne "complete") {
+              throw "Non-draft Windows releases require completion audit status complete; got $($completion.Status) with $(@($completion.Missing).Count) missing item(s)."
+            }
+            if ($hosted.Status -ne "passed") {
+              throw "Non-draft Windows releases require a green hosted CI audit; got $($hosted.Status): $($hosted.Detail)"
+            }
+            if ([bool]$source.IsDirty) {
+              throw "Non-draft Windows releases require a clean source-state audit; tracked=$($source.TrackedChangedCount) untracked=$($source.UntrackedCount)."
+            }
+            if ($signing.Status -ne "trusted") {
+              throw "Non-draft Windows releases require trusted signing; got $($signing.Status)."
+            }
+          }
+          $ghArgs = @(
+            "release", "create", "${{ inputs.tag_name }}",
+            "dist/tmux-win32-portable.zip#tmux-win32-portable.zip",
+            "dist/tmux-win32-portable.zip.sha256#tmux-win32-portable.zip.sha256",
+            "dist/tmux-win32.msix#tmux-win32.msix",
+            "dist/release-check.json#release-check.json",
+            "dist/command-surface.json#command-surface.json",
+            "dist/tmux-win32.msix.json#tmux-win32.msix.json",
+            "dist/signing-audit.json#signing-audit.json",
+            "dist/ipc-boundary-audit.json#ipc-boundary-audit.json",
+            "dist/hosted-ci-audit.json#hosted-ci-audit.json",
+            "dist/source-state-audit.json#source-state-audit.json",
+            "dist/windows-release-notes.md#windows-release-notes.md",
+            "dist/completion-audit.json#completion-audit.json")
+          if (Test-Path .\dist\linux-parity-matrix.json) {
+            $ghArgs += "dist/linux-parity-matrix.json#linux-parity-matrix.json"
+          }
+          if (Test-Path .\dist\linux-behavior-parity.json) {
+            $ghArgs += "dist/linux-behavior-parity.json#linux-behavior-parity.json"
+          }
+          $ghArgs += @(
+            "--title", "tmux Windows ${{ inputs.tag_name }}",
+            "--notes-file", "dist/windows-release-notes.md")
+          if ("${{ inputs.draft }}" -eq "true") {
+            $ghArgs += "--draft"
+          }
+          if ("${{ inputs.prerelease }}" -eq "true") {
+            $ghArgs += "--prerelease"
+          }
+          gh @ghArgs
