@@ -128,7 +128,42 @@ function Assert-ReleaseMinimum([object]$Summary, [string]$Property,
 	}
 }
 
+function Assert-ReleaseStepPassed([object]$Summary, [string]$Name) {
+	if (-not ($Summary.PSObject.Properties.Name -contains "Steps")) {
+		throw "release summary missing Steps"
+	}
+	$stepMatches = @($Summary.Steps | Where-Object { $_.Name -eq $Name })
+	if ($stepMatches.Count -eq 0) {
+		throw "release summary missing required step: $Name"
+	}
+	$status = [string]$stepMatches[0].Status
+	if ($status -ne "passed") {
+		throw ("release summary required step did not pass: {0} status={1}" -f `
+		    $Name, $status)
+	}
+}
+
 if ($RequireCompletionAudit) {
+	foreach ($stepName in @(
+	    "build",
+	    "package-smoke",
+	    "zip-sha256",
+	    "manifest-hashes",
+	    "command-surface",
+	    "msix-package",
+	    "respawn-stress",
+	    "ipc-acl-stress",
+	    "job-stress",
+	    "client-lifecycle-stress",
+	    "signal-matrix-stress",
+	    "config-parser-stress",
+	    "zip-install-uninstall",
+	    "stress",
+	    "soak",
+	    "console-soak",
+	    "clipboard-stress")) {
+		Assert-ReleaseStepPassed $release $stepName
+	}
 	Assert-ReleaseMinimum $release "RespawnIterations" 20
 	Assert-ReleaseMinimum $release "IpcAclIterations" 3
 	Assert-ReleaseMinimum $release "JobStressIterations" 10

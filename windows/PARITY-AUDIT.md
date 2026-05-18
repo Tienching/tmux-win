@@ -140,7 +140,8 @@ and rejects a passed hosted CI summary whose green run has a different head SHA.
 When source-state evidence is present too, the verifier also rejects a
 hosted-CI head SHA that does not match the source-state head SHA.
 With completion evidence required, the verifier also rejects release summaries
-below the documented release-gate stress minimums, including clipboard stress.
+with missing, skipped, or failed required release steps, or below the documented
+release-gate stress minimums, including clipboard stress.
 Production publication can
 add `-RequireCompletionComplete` so any remaining completion-audit gap blocks a
 non-draft release, and `-RequireHostedCiGreen` so blocked or missing hosted CI

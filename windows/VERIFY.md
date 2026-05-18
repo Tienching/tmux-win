@@ -408,10 +408,11 @@ anything except an observed successful hosted workflow run for that target
 commit.
 
 With `-RequireCompletionAudit`, the verifier also enforces the release-gate
-stress minimums from `windows/RELEASE.md`: respawn 20, IPC ACL 3, job stress
-10, client lifecycle 5, signal matrix 3, packaged stress 1, mixed soak 10
-seconds, console soak 10 seconds, console reattach 2, clipboard stress 3, and
-config parser stress enabled.
+steps and stress minimums from `windows/RELEASE.md`: build, package smoke,
+zip and manifest checks, command surface, MSIX packaging, install/uninstall,
+respawn 20, IPC ACL 3, job stress 10, client lifecycle 5, signal matrix 3,
+packaged stress 1, mixed soak 10 seconds, console soak 10 seconds, console
+reattach 2, clipboard stress 3, and config parser stress enabled.
 
 Use `-RequireCompletionComplete` for production publication. It rejects any
 artifact set whose completion audit status is not `complete`, while
