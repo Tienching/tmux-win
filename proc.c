@@ -16,22 +16,36 @@
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <sys/types.h>
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <sys/utsname.h>
+#endif
 
 #include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #if defined(HAVE_NCURSES_H)
 #include <ncurses.h>
 #endif
 
 #include "tmux.h"
+
+#ifdef _WIN32
+#include "compat/win32-socketpair.h"
+#endif
 
 struct tmuxproc {
 	const char	 *name;
@@ -56,10 +70,14 @@ struct tmuxpeer {
 
 	struct imsgbuf	 ibuf;
 	struct event	 event;
+#ifdef _WIN32
+	struct event	 poll_event;
+#endif
 	uid_t		 uid;
 
 	int		 flags;
 #define PEER_BAD 0x1
+#define PEER_IN_CALLBACK 0x2
 
 	void		(*dispatchcb)(struct imsg *, void *);
 	void		 *arg;
@@ -69,13 +87,47 @@ struct tmuxpeer {
 
 static int	peer_check_version(struct tmuxpeer *, struct imsg *);
 static void	proc_update_event(struct tmuxpeer *);
+#ifdef _WIN32
+static void	proc_win32_poll_cb(evutil_socket_t, short, void *);
+#endif
+
+#ifdef _WIN32
+static struct tmuxproc	*proc_win32_signal_proc;
+
+static BOOL WINAPI
+proc_win32_console_handler(DWORD type)
+{
+	int	signo;
+
+	if (proc_win32_signal_proc == NULL ||
+	    proc_win32_signal_proc->signalcb == NULL)
+		return (FALSE);
+
+	switch (type) {
+	case CTRL_C_EVENT:
+	case CTRL_BREAK_EVENT:
+		signo = SIGINT;
+		break;
+	case CTRL_CLOSE_EVENT:
+	case CTRL_LOGOFF_EVENT:
+	case CTRL_SHUTDOWN_EVENT:
+		signo = SIGTERM;
+		break;
+	default:
+		return (FALSE);
+	}
+	proc_win32_signal_proc->signalcb(signo);
+	return (TRUE);
+}
+#endif
 
 static void
-proc_event_cb(__unused int fd, short events, void *arg)
+proc_event_cb(__unused evutil_socket_t fd, short events, void *arg)
 {
 	struct tmuxpeer	*peer = arg;
 	ssize_t		 n;
 	struct imsg	 imsg;
+	int		 want_write;
 
 	if (!(peer->flags & PEER_BAD) && (events & EV_READ)) {
 		if (imsgbuf_read(&peer->ibuf) != 1) {
@@ -96,12 +148,20 @@ proc_event_cb(__unused int fd, short events, void *arg)
 				break;
 			}
 
+			peer->flags |= PEER_IN_CALLBACK;
 			peer->dispatchcb(&imsg, peer->arg);
+			peer->flags &= ~PEER_IN_CALLBACK;
 			imsg_free(&imsg);
 		}
 	}
 
-	if (events & EV_WRITE) {
+	want_write = (events & EV_WRITE);
+#ifdef _WIN32
+	if (imsgbuf_queuelen(&peer->ibuf) > 0)
+		want_write = 1;
+#endif
+
+	if (want_write) {
 		if (imsgbuf_write(&peer->ibuf) == -1) {
 			peer->dispatchcb(NULL, peer->arg);
 			return;
@@ -116,13 +176,39 @@ proc_event_cb(__unused int fd, short events, void *arg)
 	proc_update_event(peer);
 }
 
+#ifdef _WIN32
 static void
-proc_signal_cb(int signo, __unused short events, void *arg)
+proc_win32_poll_cb(__unused evutil_socket_t fd, __unused short events, void *arg)
+{
+	struct tmuxpeer	*peer = arg;
+	struct timeval	 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	unsigned long	 pending;
+	short		 ready = 0;
+
+	/*
+	 * The libevent win32 backend can miss socket readiness after a peer
+	 * queues a reply from inside a read callback. Poll nonblocking sockets
+	 * on a short persistent timer so IPC makes progress.
+	 */
+	evtimer_add(&peer->poll_event, &tv);
+	if (win32_socket_pending(peer->ibuf.fd, &pending) == 0 && pending != 0)
+		ready |= EV_READ;
+	if (imsgbuf_queuelen(&peer->ibuf) > 0)
+		ready |= EV_WRITE;
+	if (ready != 0)
+		proc_event_cb(peer->ibuf.fd, ready, peer);
+}
+#endif
+
+#ifndef _WIN32
+static void
+proc_signal_cb(evutil_socket_t signo, __unused short events, void *arg)
 {
 	struct tmuxproc	*tp = arg;
 
 	tp->signalcb(signo);
 }
+#endif
 
 static int
 peer_check_version(struct tmuxpeer *peer, struct imsg *imsg)
@@ -171,7 +257,8 @@ proc_send(struct tmuxpeer *peer, enum msgtype type, int fd, const void *buf,
 	retval = imsg_compose(ibuf, type, PROTOCOL_VERSION, -1, fd, vp, len);
 	if (retval != 1)
 		return (-1);
-	proc_update_event(peer);
+	if (~peer->flags & PEER_IN_CALLBACK)
+		proc_update_event(peer);
 	return (0);
 }
 
@@ -179,17 +266,26 @@ struct tmuxproc *
 proc_start(const char *name)
 {
 	struct tmuxproc	*tp;
+#ifndef _WIN32
 	struct utsname	 u;
+#endif
 
 	log_open(name);
 	setproctitle("%s (%s)", name, socket_path);
 
+#ifdef _WIN32
+	log_debug("%s started (%ld): version %s, socket %s, protocol %d", name,
+	    (long)GetCurrentProcessId(), getversion(), socket_path,
+	    PROTOCOL_VERSION);
+	log_debug("on Windows");
+#else
 	if (uname(&u) < 0)
 		memset(&u, 0, sizeof u);
 
 	log_debug("%s started (%ld): version %s, socket %s, protocol %d", name,
 	    (long)getpid(), getversion(), socket_path, PROTOCOL_VERSION);
 	log_debug("on %s %s %s", u.sysname, u.release, u.version);
+#endif
 	log_debug("using libevent %s %s", event_get_version(), event_get_method());
 #ifdef HAVE_UTF8PROC
 	log_debug("using utf8proc %s", utf8proc_version());
@@ -228,6 +324,11 @@ proc_exit(struct tmuxproc *tp)
 void
 proc_set_signals(struct tmuxproc *tp, void (*signalcb)(int))
 {
+#ifdef _WIN32
+	tp->signalcb = signalcb;
+	proc_win32_signal_proc = tp;
+	SetConsoleCtrlHandler(proc_win32_console_handler, TRUE);
+#else
 	struct sigaction	sa;
 
 	tp->signalcb = signalcb;
@@ -259,11 +360,19 @@ proc_set_signals(struct tmuxproc *tp, void (*signalcb)(int))
 	signal_add(&tp->ev_sigusr2, NULL);
 	signal_set(&tp->ev_sigwinch, SIGWINCH, proc_signal_cb, tp);
 	signal_add(&tp->ev_sigwinch, NULL);
+#endif
 }
 
 void
 proc_clear_signals(struct tmuxproc *tp, int defaults)
 {
+#ifdef _WIN32
+	(void)defaults;
+	if (proc_win32_signal_proc == tp) {
+		SetConsoleCtrlHandler(proc_win32_console_handler, FALSE);
+		proc_win32_signal_proc = NULL;
+	}
+#else
 	struct sigaction	sa;
 
 	memset(&sa, 0, sizeof sa);
@@ -294,14 +403,19 @@ proc_clear_signals(struct tmuxproc *tp, int defaults)
 		sigaction(SIGUSR2, &sa, NULL);
 		sigaction(SIGWINCH, &sa, NULL);
 	}
+#endif
 }
 
 struct tmuxpeer *
-proc_add_peer(struct tmuxproc *tp, int fd,
+proc_add_peer(struct tmuxproc *tp, imsg_fd_t fd,
     void (*dispatchcb)(struct imsg *, void *), void *arg)
 {
 	struct tmuxpeer	*peer;
+#ifdef _WIN32
+	struct timeval	 tv = { .tv_sec = 0, .tv_usec = 10000 };
+#else
 	gid_t		 gid;
+#endif
 
 	peer = xcalloc(1, sizeof *peer);
 	peer->parent = tp;
@@ -311,16 +425,27 @@ proc_add_peer(struct tmuxproc *tp, int fd,
 
 	if (imsgbuf_init(&peer->ibuf, fd) == -1)
 		fatal("imsgbuf_init");
+#ifndef _WIN32
 	imsgbuf_allow_fdpass(&peer->ibuf);
+#endif
 	event_set(&peer->event, fd, EV_READ, proc_event_cb, peer);
 
+#ifdef _WIN32
+	peer->uid = TMUX_WIN32_OWNER_UID;
+#else
 	if (getpeereid(fd, &peer->uid, &gid) != 0)
 		peer->uid = (uid_t)-1;
+#endif
 
-	log_debug("add peer %p: %d (%p)", peer, fd, arg);
+	log_debug("add peer %p: %llu (%p)", peer,
+	    (unsigned long long)fd, arg);
 	TAILQ_INSERT_TAIL(&tp->peers, peer, entry);
 
 	proc_update_event(peer);
+#ifdef _WIN32
+	evtimer_set(&peer->poll_event, proc_win32_poll_cb, peer);
+	event_add(&peer->poll_event, &tv);
+#endif
 	return (peer);
 }
 
@@ -331,9 +456,16 @@ proc_remove_peer(struct tmuxpeer *peer)
 	log_debug("remove peer %p", peer);
 
 	event_del(&peer->event);
+#ifdef _WIN32
+	event_del(&peer->poll_event);
+#endif
 	imsgbuf_clear(&peer->ibuf);
 
+#ifdef _WIN32
+	win32_socket_close(peer->ibuf.fd);
+#else
 	close(peer->ibuf.fd);
+#endif
 	free(peer);
 }
 
@@ -358,6 +490,10 @@ proc_toggle_log(struct tmuxproc *tp)
 pid_t
 proc_fork_and_daemon(int *fd)
 {
+#ifdef _WIN32
+	(void)fd;
+	fatalx("proc_fork_and_daemon is not implemented on Windows");
+#else
 	pid_t	pid;
 	int	pair[2];
 
@@ -377,6 +513,7 @@ proc_fork_and_daemon(int *fd)
 		*fd = pair[0];
 		return (pid);
 	}
+#endif
 }
 
 uid_t

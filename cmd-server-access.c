@@ -19,11 +19,15 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include "tmux.h"
 
@@ -32,6 +36,35 @@
  */
 
 static enum cmd_retval cmd_server_access_exec(struct cmd *, struct cmdq_item *);
+
+#ifdef _WIN32
+static const char *
+cmd_server_access_win32_current_name(void)
+{
+	static char	name[256];
+	DWORD		size = sizeof name;
+
+	if (GetUserNameA(name, &size))
+		return (name);
+	return ("current-user");
+}
+
+static int
+cmd_server_access_win32_lookup(const char *name, uid_t *uid,
+    const char **resolved)
+{
+	const char	*current;
+
+	if (name == NULL || *name == '\0')
+		return (-1);
+	current = cmd_server_access_win32_current_name();
+	if (_stricmp(name, current) != 0 && strcmp(name, ".") != 0)
+		return (-1);
+	*uid = TMUX_WIN32_OWNER_UID;
+	*resolved = current;
+	return (0);
+}
+#endif
 
 const struct cmd_entry cmd_server_access_entry = {
 	.name = "server-access",
@@ -45,14 +78,15 @@ const struct cmd_entry cmd_server_access_entry = {
 };
 
 static enum cmd_retval
-cmd_server_access_deny(struct cmdq_item *item, struct passwd *pw)
+cmd_server_access_deny(struct cmdq_item *item, uid_t target_uid,
+    const char *target_name)
 {
 	struct client		*loop;
 	struct server_acl_user	*user;
 	uid_t			 uid;
 
-	if ((user = server_acl_user_find(pw->pw_uid)) == NULL) {
-		cmdq_error(item, "user %s not found", pw->pw_name);
+	if ((user = server_acl_user_find(target_uid)) == NULL) {
+		cmdq_error(item, "user %s not found", target_name);
 		return (CMD_RETURN_ERROR);
 	}
 	TAILQ_FOREACH(loop, &clients, entry) {
@@ -62,7 +96,7 @@ cmd_server_access_deny(struct cmdq_item *item, struct passwd *pw)
 			loop->flags |= CLIENT_EXIT;
 		}
 	}
-	server_acl_user_deny(pw->pw_uid);
+	server_acl_user_deny(target_uid);
 
 	return (CMD_RETURN_NORMAL);
 }
@@ -74,7 +108,11 @@ cmd_server_access_exec(struct cmd *self, struct cmdq_item *item)
 	struct args	*args = cmd_get_args(self);
 	struct client	*c = cmdq_get_target_client(item);
 	char		*name;
+#ifndef _WIN32
 	struct passwd	*pw = NULL;
+#endif
+	const char	*user_name;
+	uid_t		 uid;
 
 	if (args_has(args, 'l')) {
 		server_acl_display(item);
@@ -86,6 +124,13 @@ cmd_server_access_exec(struct cmd *self, struct cmdq_item *item)
 	}
 
 	name = format_single(item, args_string(args, 0), c, NULL, NULL, NULL);
+#ifdef _WIN32
+	if (cmd_server_access_win32_lookup(name, &uid, &user_name) != 0) {
+		cmdq_error(item, "unknown user: %s", name);
+		free(name);
+		return (CMD_RETURN_ERROR);
+	}
+#else
 	if (*name != '\0')
 		pw = getpwnam(name);
 	if (pw == NULL) {
@@ -93,11 +138,20 @@ cmd_server_access_exec(struct cmd *self, struct cmdq_item *item)
 		free(name);
 		return (CMD_RETURN_ERROR);
 	}
+	uid = pw->pw_uid;
+	user_name = pw->pw_name;
+#endif
 	free(name);
 
-	if (pw->pw_uid == 0 || pw->pw_uid == getuid()) {
+	if (uid == 0
+#ifdef _WIN32
+	    || uid == TMUX_WIN32_OWNER_UID
+#else
+	    || uid == getuid()
+#endif
+	    ) {
 		cmdq_error(item, "%s owns the server, can't change access",
-		    pw->pw_name);
+		    user_name);
 		return (CMD_RETURN_ERROR);
 	}
 
@@ -111,36 +165,36 @@ cmd_server_access_exec(struct cmd *self, struct cmdq_item *item)
 	}
 
 	if (args_has(args, 'd'))
-		return (cmd_server_access_deny(item, pw));
+		return (cmd_server_access_deny(item, uid, user_name));
 	if (args_has(args, 'a')) {
-		if (server_acl_user_find(pw->pw_uid) != NULL) {
+		if (server_acl_user_find(uid) != NULL) {
 			cmdq_error(item, "user %s is already added",
-			    pw->pw_name);
+			    user_name);
 			return (CMD_RETURN_ERROR);
 		}
-		server_acl_user_allow(pw->pw_uid);
+		server_acl_user_allow(uid);
 		/* Do not return - allow -r or -w with -a. */
 	} else if (args_has(args, 'r') || args_has(args, 'w')) {
 		/* -r or -w implies -a if user does not exist. */
-		if (server_acl_user_find(pw->pw_uid) == NULL)
-			server_acl_user_allow(pw->pw_uid);
+		if (server_acl_user_find(uid) == NULL)
+			server_acl_user_allow(uid);
 	}
 
 	if (args_has(args, 'w')) {
-		if (server_acl_user_find(pw->pw_uid) == NULL) {
-			cmdq_error(item, "user %s not found", pw->pw_name);
+		if (server_acl_user_find(uid) == NULL) {
+			cmdq_error(item, "user %s not found", user_name);
 			return (CMD_RETURN_ERROR);
 		}
-		server_acl_user_allow_write(pw->pw_uid);
+		server_acl_user_allow_write(uid);
 		return (CMD_RETURN_NORMAL);
 	}
 
 	if (args_has(args, 'r')) {
-		if (server_acl_user_find(pw->pw_uid) == NULL) {
-			cmdq_error(item, "user %s not found", pw->pw_name);
+		if (server_acl_user_find(uid) == NULL) {
+			cmdq_error(item, "user %s not found", user_name);
 			return (CMD_RETURN_ERROR);
 		}
-		server_acl_user_deny_write(pw->pw_uid);
+		server_acl_user_deny_write(uid);
 		return (CMD_RETURN_NORMAL);
 	}
 

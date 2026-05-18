@@ -43,6 +43,7 @@ fi
 
 # Set up the compiler in two different ways and say yes we may want to install.
 AC_PROG_CC
+AC_PROG_CXX
 AM_PROG_CC_C_O
 m4_version_prereq(2.70, [AC_PROG_CC], [AC_PROG_CC_C99])
 AC_PROG_CPP
@@ -171,30 +172,60 @@ AC_CHECK_FUNCS([ \
 ])
 
 # Check for functions with a compatibility implementation.
-AC_REPLACE_FUNCS([ \
-	asprintf \
-	cfmakeraw \
-	clock_gettime \
-	closefrom \
-	explicit_bzero \
-	fgetln \
-	freezero \
-	getdtablecount \
-	getdtablesize \
-	getpeereid \
-	getline \
-	getprogname \
-	htonll \
-	memmem \
-	ntohll \
-	setenv \
-	setproctitle \
-	strcasestr \
-	strlcat \
-	strlcpy \
-	strndup \
-	strsep \
-])
+case "$host_os" in
+	*mingw*|*windows*)
+		AC_REPLACE_FUNCS([ \
+			asprintf \
+			clock_gettime \
+			explicit_bzero \
+			fgetln \
+			freezero \
+			getline \
+			getprogname \
+			htonll \
+			memmem \
+			ntohll \
+			setenv \
+			setproctitle \
+			strcasestr \
+			strlcat \
+			strlcpy \
+			strndup \
+			strsep \
+		])
+		AC_DEFINE(HAVE_CFMAKERAW)
+		AC_DEFINE(HAVE_CLOSEFROM)
+		AC_DEFINE(HAVE_GETDTABLECOUNT)
+		AC_DEFINE(HAVE_GETDTABLESIZE)
+		AC_DEFINE(HAVE_GETPEEREID)
+		;;
+	*)
+		AC_REPLACE_FUNCS([ \
+			asprintf \
+			cfmakeraw \
+			clock_gettime \
+			closefrom \
+			explicit_bzero \
+			fgetln \
+			freezero \
+			getdtablecount \
+			getdtablesize \
+			getpeereid \
+			getline \
+			getprogname \
+			htonll \
+			memmem \
+			ntohll \
+			setenv \
+			setproctitle \
+			strcasestr \
+			strlcat \
+			strlcpy \
+			strndup \
+			strsep \
+		])
+		;;
+esac
 AC_FUNC_STRNLEN
 
 # Check if strtonum works.
@@ -668,21 +699,29 @@ fi
 # Look for daemon, compat/daemon.c used if missing. Solaris 10 has it in
 # libresolv, but no declaration anywhere, so check for declaration as well as
 # function.
-AC_CHECK_FUNC(daemon, found_daemon=yes, found_daemon=no)
-AC_CHECK_DECL(
-	daemon,
-	,
-	found_daemon=no,
-	[
-		#include <stdlib.h>
-		#include <unistd.h>
-	]
-)
-if test "x$found_daemon" = xyes; then
-	AC_DEFINE(HAVE_DAEMON)
-else
-	AC_LIBOBJ(daemon)
-fi
+case "$host_os" in
+	*mingw*|*windows*)
+		found_daemon=yes
+		AC_DEFINE(HAVE_DAEMON)
+		;;
+	*)
+		AC_CHECK_FUNC(daemon, found_daemon=yes, found_daemon=no)
+		AC_CHECK_DECL(
+			daemon,
+			,
+			found_daemon=no,
+			[
+				#include <stdlib.h>
+				#include <unistd.h>
+			]
+		)
+		if test "x$found_daemon" = xyes; then
+			AC_DEFINE(HAVE_DAEMON)
+		else
+			AC_LIBOBJ(daemon)
+		fi
+		;;
+esac
 
 # Look for stravis, compat/{vis,unvis}.c used if missing.
 AC_CHECK_FUNC(stravis, found_stravis=yes, found_stravis=no)
@@ -715,16 +754,28 @@ else
 fi
 
 # Look for fdforkpty and forkpty in libutil.
-AC_SEARCH_LIBS(fdforkpty, util, found_fdforkpty=yes, found_fdforkpty=no)
-if test "x$found_fdforkpty" = xyes; then
-	AC_DEFINE(HAVE_FDFORKPTY)
-else
-	AC_LIBOBJ(fdforkpty)
-fi
-AC_SEARCH_LIBS(forkpty, util, found_forkpty=yes, found_forkpty=no)
-if test "x$found_forkpty" = xyes; then
-	AC_DEFINE(HAVE_FORKPTY)
-fi
+case "$host_os" in
+	*mingw*|*windows*)
+		found_fdforkpty=yes
+		found_forkpty=yes
+		AC_DEFINE(HAVE_FDFORKPTY)
+		AC_DEFINE(HAVE_FORKPTY)
+		;;
+	*)
+		AC_SEARCH_LIBS(fdforkpty, util, found_fdforkpty=yes,
+		    found_fdforkpty=no)
+		if test "x$found_fdforkpty" = xyes; then
+			AC_DEFINE(HAVE_FDFORKPTY)
+		else
+			AC_LIBOBJ(fdforkpty)
+		fi
+		AC_SEARCH_LIBS(forkpty, util, found_forkpty=yes,
+		    found_forkpty=no)
+		if test "x$found_forkpty" = xyes; then
+			AC_DEFINE(HAVE_FORKPTY)
+		fi
+		;;
+esac
 AM_CONDITIONAL(NEED_FORKPTY, test "x$found_forkpty" = xno)
 
 # Look for kinfo_getfile in libutil.
@@ -981,6 +1032,10 @@ case "$host_os" in
 		AC_MSG_RESULT(cygwin)
 		PLATFORM=cygwin
 		;;
+	*mingw*|*windows*)
+		AC_MSG_RESULT(windows)
+		PLATFORM=windows
+		;;
 	*haiku*)
 		AC_MSG_RESULT(haiku)
 		PLATFORM=haiku
@@ -1001,6 +1056,7 @@ AM_CONDITIONAL(IS_OPENBSD, test "x$PLATFORM" = xopenbsd)
 AM_CONDITIONAL(IS_SUNOS, test "x$PLATFORM" = xsunos)
 AM_CONDITIONAL(IS_HPUX, test "x$PLATFORM" = xhpux)
 AM_CONDITIONAL(IS_CYGWIN, test "x$PLATFORM" = xcygwin)
+AM_CONDITIONAL(IS_WINDOWS, test "x$PLATFORM" = xwindows)
 AM_CONDITIONAL(IS_HAIKU, test "x$PLATFORM" = xhaiku)
 AM_CONDITIONAL(IS_UNKNOWN, test "x$PLATFORM" = xunknown)
 

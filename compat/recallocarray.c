@@ -19,7 +19,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include "compat.h"
 
@@ -28,6 +30,21 @@
  * if both s1 < MUL_NO_OVERFLOW and s2 < MUL_NO_OVERFLOW
  */
 #define MUL_NO_OVERFLOW ((size_t)1 << (sizeof(size_t) * 4))
+
+static size_t
+recallocarray_pagesize(void)
+{
+#ifdef _WIN32
+	SYSTEM_INFO	si;
+
+	GetSystemInfo(&si);
+	if (si.dwPageSize == 0)
+		return (4096);
+	return (si.dwPageSize);
+#else
+	return (getpagesize());
+#endif
+}
 
 void *
 recallocarray(void *ptr, size_t oldnmemb, size_t newnmemb, size_t size)
@@ -59,7 +76,7 @@ recallocarray(void *ptr, size_t oldnmemb, size_t newnmemb, size_t size)
 	if (newsize <= oldsize) {
 		size_t d = oldsize - newsize;
 
-		if (d < oldsize / 2 && d < (size_t)getpagesize()) {
+		if (d < oldsize / 2 && d < recallocarray_pagesize()) {
 			memset((char *)ptr + newsize, 0, d);
 			return ptr;
 		}

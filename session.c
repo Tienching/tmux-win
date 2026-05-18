@@ -30,8 +30,8 @@ struct sessions		sessions;
 u_int			next_session_id;
 struct session_groups	session_groups = RB_INITIALIZER(&session_groups);
 
-static void	session_free(int, short, void *);
-static void	session_lock_timer(int, short, void *);
+static void	session_free(evutil_socket_t, short, void *);
+static void	session_lock_timer(evutil_socket_t, short, void *);
 static struct winlink *session_next_alert(struct winlink *);
 static struct winlink *session_previous_alert(struct winlink *);
 static void	session_group_remove(struct session *);
@@ -178,7 +178,7 @@ session_remove_ref(struct session *s, const char *from)
 
 /* Free session. */
 static void
-session_free(__unused int fd, __unused short events, void *arg)
+session_free(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct session	*s = arg;
 
@@ -231,7 +231,7 @@ session_destroy(struct session *s, int notify, const char *from)
 
 /* Lock session if it has timed out. */
 static void
-session_lock_timer(__unused int fd, __unused short events, void *arg)
+session_lock_timer(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct session	*s = arg;
 

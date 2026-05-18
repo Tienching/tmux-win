@@ -29,8 +29,8 @@
 
 #include "tmux.h"
 
-static void	 status_message_callback(int, short, void *);
-static void	 status_timer_callback(int, short, void *);
+static void	 status_message_callback(evutil_socket_t, short, void *);
+static void	 status_timer_callback(evutil_socket_t, short, void *);
 
 static char	*status_prompt_find_history_file(void);
 static const char *status_prompt_up_history(u_int *, u_int);
@@ -70,11 +70,18 @@ status_prompt_find_history_file(void)
 	history_file = options_get_string(global_options, "history-file");
 	if (*history_file == '\0')
 		return (NULL);
+#ifdef _WIN32
+	if (path_is_absolute(history_file))
+		return (xstrdup(history_file));
+	if (history_file[0] != '~' ||
+	    (history_file[1] != '/' && history_file[1] != '\\'))
+		return (NULL);
+#else
 	if (*history_file == '/')
 		return (xstrdup(history_file));
-
 	if (history_file[0] != '~' || history_file[1] != '/')
 		return (NULL);
+#endif
 	if ((home = find_home()) == NULL)
 		return (NULL);
 	xasprintf(&path, "%s%s", home, history_file + 1);
@@ -177,7 +184,7 @@ status_prompt_save_history(void)
 
 /* Status timer callback. */
 static void
-status_timer_callback(__unused int fd, __unused short events, void *arg)
+status_timer_callback(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct client	*c = arg;
 	struct session	*s = c->session;
@@ -527,7 +534,7 @@ status_message_clear(struct client *c)
 
 /* Clear status line message after timer expires. */
 static void
-status_message_callback(__unused int fd, __unused short event, void *data)
+status_message_callback(__unused evutil_socket_t fd, __unused short event, void *data)
 {
 	struct client	*c = data;
 

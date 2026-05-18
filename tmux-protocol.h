@@ -20,7 +20,7 @@
 #define TMUX_PROTOCOL_H
 
 /* Protocol version. */
-#define PROTOCOL_VERSION 8
+#define PROTOCOL_VERSION 9
 
 /* Message types. */
 enum msgtype {
@@ -59,6 +59,7 @@ enum msgtype {
 	MSG_WAKEUP,
 	MSG_EXEC,
 	MSG_FLAGS,
+	MSG_STDIN,
 
 	MSG_READ_OPEN = 300,
 	MSG_READ,
@@ -78,6 +79,11 @@ enum msgtype {
 struct msg_command {
 	int	argc;
 }; /* followed by packed argv */
+
+struct msg_resize {
+	uint32_t	sx;
+	uint32_t	sy;
+};
 
 struct msg_read_open {
 	int	stream;

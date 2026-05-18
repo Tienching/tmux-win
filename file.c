@@ -35,7 +35,25 @@
 
 static int	file_next_stream = 3;
 
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 RB_GENERATE(client_files, client_file, entry, file_cmp);
+
+#ifdef _WIN32
+static void	file_read_open_file(struct tmuxpeer *, int, const char *);
+#endif
+
+static int
+file_should_open_locally(struct client *c, const char *path)
+{
+#ifdef _WIN32
+	if (strcmp(path, "-") != 0)
+		return (1);
+#endif
+	return (c == NULL || (c->flags & CLIENT_ATTACHED));
+}
 
 /* Get path for file, either as given or from working directory. */
 static char *
@@ -44,7 +62,11 @@ file_get_path(struct client *c, const char *file)
 	const char	*home;
 	char		*path, *full_path;
 
-	if (strncmp(file, "~/", 2) != 0)
+	if (strncmp(file, "~/", 2) != 0
+#ifdef _WIN32
+	    && strncmp(file, "~\\", 2) != 0
+#endif
+	    )
 		path = xstrdup(file);
 	else {
 		home = find_home();
@@ -52,9 +74,15 @@ file_get_path(struct client *c, const char *file)
 			home = "";
 		xasprintf(&path, "%s%s", home, file + 1);
 	}
+#ifdef _WIN32
+	if (path_is_absolute(path))
+		return (path);
+	xasprintf(&full_path, "%s\\%s", server_client_get_cwd(c, NULL), path);
+#else
 	if (*path == '/')
 		return (path);
 	xasprintf(&full_path, "%s/%s", server_client_get_cwd(c, NULL), path);
+#endif
 	free(path);
 	return (full_path);
 }
@@ -153,7 +181,7 @@ file_free(struct client_file *cf)
 
 /* Event to fire the done callback. */
 static void
-file_fire_done_cb(__unused int fd, __unused short events, void *arg)
+file_fire_done_cb(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct client_file	*cf = arg;
 	struct client		*c = cf->c;
@@ -317,7 +345,7 @@ file_write(struct client *c, const char *path, int flags, const void *bdata,
 	cf = file_create_with_client(c, stream, cb, cbdata);
 	cf->path = file_get_path(c, path);
 
-	if (c == NULL || c->flags & CLIENT_ATTACHED) {
+	if (file_should_open_locally(c, path)) {
 		if (flags & O_APPEND)
 			mode = "ab";
 		else
@@ -391,7 +419,7 @@ file_read(struct client *c, const char *path, client_file_cb cb, void *cbdata)
 	cf = file_create_with_client(c, stream, cb, cbdata);
 	cf->path = file_get_path(c, path);
 
-	if (c == NULL || c->flags & CLIENT_ATTACHED) {
+	if (file_should_open_locally(c, path)) {
 		f = fopen(cf->path, "rb");
 		if (f == NULL) {
 			cf->error = errno;
@@ -456,7 +484,7 @@ file_cancel(struct client_file *cf)
 
 /* Push event, fired if there is more writing to be done. */
 static void
-file_push_cb(__unused int fd, __unused short events, void *arg)
+file_push_cb(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct client_file	*cf = arg;
 
@@ -570,8 +598,12 @@ file_write_open(struct client_files *files, struct tmuxpeer *peer,
 	size_t			 msglen = imsg->hdr.len - IMSG_HEADER_SIZE;
 	const char		*path;
 	struct msg_write_ready	 reply;
-	struct client_file	 find, *cf;
+	struct client_file	 find, *cf = NULL;
+#ifdef _WIN32
+	const int		 flags = O_WRONLY|O_CREAT|O_BINARY;
+#else
 	const int		 flags = O_NONBLOCK|O_WRONLY|O_CREAT;
+#endif
 	int			 error = 0;
 
 	if (msglen < sizeof *msg)
@@ -611,6 +643,10 @@ file_write_open(struct client_files *files, struct tmuxpeer *peer,
 		goto reply;
 	}
 
+#ifdef _WIN32
+	goto reply;
+#endif
+
 	cf->event = bufferevent_new(cf->fd, NULL, file_write_callback,
 	    file_write_error_callback, cf);
 	if (cf->event == NULL)
@@ -619,6 +655,8 @@ file_write_open(struct client_files *files, struct tmuxpeer *peer,
 	goto reply;
 
 reply:
+	if (error != 0 && cf != NULL)
+		file_free(cf);
 	reply.stream = msg->stream;
 	reply.error = error;
 	proc_send(peer, MSG_WRITE_READY, -1, &reply, sizeof reply);
@@ -632,6 +670,11 @@ file_write_data(struct client_files *files, struct imsg *imsg)
 	size_t			 msglen = imsg->hdr.len - IMSG_HEADER_SIZE;
 	struct client_file	 find, *cf;
 	size_t			 size = msglen - sizeof *msg;
+#ifdef _WIN32
+	const char		*data;
+	ssize_t			 written;
+	int			 failed = 0;
+#endif
 
 	if (msglen < sizeof *msg)
 		fatalx("bad MSG_WRITE size");
@@ -642,6 +685,30 @@ file_write_data(struct client_files *files, struct imsg *imsg)
 
 	if (cf->event != NULL)
 		bufferevent_write(cf->event, msg + 1, size);
+#ifdef _WIN32
+	else if (cf->fd != -1) {
+		data = (const char *)(msg + 1);
+		while (size != 0) {
+			written = write(cf->fd, data, size);
+			if (written <= 0) {
+				log_debug("write failed file %d: %s",
+				    cf->stream, strerror(errno));
+				close(cf->fd);
+				cf->fd = -1;
+				failed = 1;
+				if (cf->cb != NULL) {
+					cf->cb(NULL, NULL, 0, -1, NULL,
+					    cf->data);
+				}
+				break;
+			}
+			data += written;
+			size -= written;
+		}
+		if (!failed && cf->cb != NULL)
+			cf->cb(NULL, NULL, 0, -1, NULL, cf->data);
+	}
+#endif
 }
 
 /* Handle a file write close message (client). */
@@ -731,7 +798,7 @@ file_read_open(struct client_files *files, struct tmuxpeer *peer,
 	size_t			 msglen = imsg->hdr.len - IMSG_HEADER_SIZE;
 	const char		*path;
 	struct msg_read_done	 reply;
-	struct client_file	 find, *cf;
+	struct client_file	 find, *cf = NULL;
 	const int		 flags = O_NONBLOCK|O_RDONLY;
 	int			 error;
 
@@ -748,6 +815,12 @@ file_read_open(struct client_files *files, struct tmuxpeer *peer,
 		error = EBADF;
 		goto reply;
 	}
+#ifdef _WIN32
+	if (msg->fd == -1) {
+		file_read_open_file(peer, msg->stream, path);
+		return;
+	}
+#endif
 	cf = file_create_with_peer(peer, files, msg->stream, cb, cbdata);
 	if (cf->closed) {
 		error = EBADF;
@@ -780,10 +853,53 @@ file_read_open(struct client_files *files, struct tmuxpeer *peer,
 	return;
 
 reply:
+	if (error != 0 && cf != NULL)
+		file_free(cf);
 	reply.stream = msg->stream;
 	reply.error = error;
 	proc_send(peer, MSG_READ_DONE, -1, &reply, sizeof reply);
 }
+
+#ifdef _WIN32
+static void
+file_read_open_file(struct tmuxpeer *peer, int stream, const char *path)
+{
+	struct msg_read_data	*data;
+	struct msg_read_done	 done;
+	char			 buffer[BUFSIZ];
+	size_t			 msglen;
+	ssize_t			 n;
+	int			 fd, error = 0;
+
+	fd = open(path, O_RDONLY|O_BINARY);
+	if (fd == -1) {
+		error = errno;
+		goto done;
+	}
+
+	for (;;) {
+		n = read(fd, buffer, sizeof buffer);
+		if (n == 0)
+			break;
+		if (n < 0) {
+			error = errno;
+			break;
+		}
+		msglen = sizeof *data + n;
+		data = xmalloc(msglen);
+		data->stream = stream;
+		memcpy(data + 1, buffer, n);
+		proc_send(peer, MSG_READ, -1, data, msglen);
+		free(data);
+	}
+	close(fd);
+
+done:
+	done.stream = stream;
+	done.error = error;
+	proc_send(peer, MSG_READ_DONE, -1, &done, sizeof done);
+}
+#endif
 
 /* Handle a read cancel message (client). */
 void

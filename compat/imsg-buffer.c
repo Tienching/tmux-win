@@ -17,20 +17,44 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <windows.h>
+#include <io.h>
+#include <sys/types.h>
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <arpa/inet.h>
+#endif
 
 #include <limits.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
+#ifdef _WIN32
+#include "compat/queue.h"
+#else
 #include "compat.h"
+#endif
 #include "imsg.h"
+
+#ifdef _WIN32
+size_t	 strlcpy(char *, const char *, size_t);
+char	*strndup(const char *, size_t);
+void	 freezero(void *, size_t);
+uint64_t htonll(uint64_t);
+uint64_t ntohll(uint64_t);
+#endif
 
 #undef htobe16
 #define htobe16 htons
@@ -44,6 +68,18 @@
 #define be32toh ntohl
 #undef be64toh
 #define be64toh ntohll
+
+#ifdef _WIN32
+#ifndef ENOBUFS
+#define ENOBUFS ENOMEM
+#endif
+#ifndef EMSGSIZE
+#define EMSGSIZE EINVAL
+#endif
+#ifndef ENOTSUP
+#define ENOTSUP EINVAL
+#endif
+#endif
 
 struct ibufqueue {
 	TAILQ_HEAD(, ibuf)	bufs;
@@ -63,6 +99,16 @@ struct msgbuf {
 
 static void	msgbuf_drain(struct msgbuf *, size_t);
 static void	ibufq_init(struct ibufqueue *);
+
+static void
+imsg_close_fd(int fd)
+{
+#ifdef _WIN32
+	_close(fd);
+#else
+	close(fd);
+#endif
+}
 
 #define	IBUF_FD_MARK_ON_STACK	-2
 
@@ -600,7 +646,7 @@ ibuf_free(struct ibuf *buf)
 	if (buf->fd == IBUF_FD_MARK_ON_STACK)
 		abort();
 	if (buf->fd >= 0)
-		close(buf->fd);
+		imsg_close_fd(buf->fd);
 	freezero(buf->buf, buf->size);
 	free(buf);
 	errno = save_errno;
@@ -632,7 +678,7 @@ ibuf_fd_set(struct ibuf *buf, int fd)
 	if (buf->fd == IBUF_FD_MARK_ON_STACK)
 		abort();
 	if (buf->fd >= 0)
-		close(buf->fd);
+		imsg_close_fd(buf->fd);
 	buf->fd = -1;
 	if (fd >= 0)
 		buf->fd = fd;
@@ -721,8 +767,9 @@ msgbuf_concat(struct msgbuf *msgbuf, struct ibufqueue *from)
 	ibufq_concat(&msgbuf->bufs, from);
 }
 
+#ifndef _WIN32
 int
-ibuf_write(int fd, struct msgbuf *msgbuf)
+ibuf_write(imsg_fd_t fd, struct msgbuf *msgbuf)
 {
 	struct iovec	 iov[IOV_MAX];
 	struct ibuf	*buf;
@@ -755,7 +802,7 @@ ibuf_write(int fd, struct msgbuf *msgbuf)
 }
 
 int
-msgbuf_write(int fd, struct msgbuf *msgbuf)
+msgbuf_write(imsg_fd_t fd, struct msgbuf *msgbuf)
 {
 	struct iovec	 iov[IOV_MAX];
 	struct ibuf	*buf, *buf0 = NULL;
@@ -814,7 +861,7 @@ msgbuf_write(int fd, struct msgbuf *msgbuf)
 	 * this works because fds are passed one at a time
 	 */
 	if (buf0 != NULL) {
-		close(buf0->fd);
+		imsg_close_fd(buf0->fd);
 		buf0->fd = -1;
 	}
 
@@ -822,6 +869,52 @@ msgbuf_write(int fd, struct msgbuf *msgbuf)
 
 	return (0);
 }
+#else
+static int
+win32_msgbuf_write(imsg_fd_t fd, struct msgbuf *msgbuf, int fdpass)
+{
+	struct ibuf	*buf;
+	int		 n, error;
+
+	if ((buf = TAILQ_FIRST(&msgbuf->bufs.bufs)) == NULL)
+		return (0);
+	if (fdpass && buf->fd != -1) {
+		errno = ENOTSUP;
+		return (-1);
+	}
+	if (ibuf_size(buf) == 0)
+		return (0);
+
+again:
+	n = send((SOCKET)fd, (const char *)ibuf_data(buf),
+	    (int)ibuf_size(buf), 0);
+	if (n == SOCKET_ERROR) {
+		error = WSAGetLastError();
+		if (error == WSAEINTR)
+			goto again;
+		if (error == WSAEWOULDBLOCK || error == WSAENOBUFS)
+			return (0);
+		errno = EIO;
+		return (-1);
+	}
+	if (n == 0)
+		return (0);
+	msgbuf_drain(msgbuf, (size_t)n);
+	return (0);
+}
+
+int
+ibuf_write(imsg_fd_t fd, struct msgbuf *msgbuf)
+{
+	return (win32_msgbuf_write(fd, msgbuf, 0));
+}
+
+int
+msgbuf_write(imsg_fd_t fd, struct msgbuf *msgbuf)
+{
+	return (win32_msgbuf_write(fd, msgbuf, 1));
+}
+#endif
 
 static int
 ibuf_read_process(struct msgbuf *msgbuf, int fd)
@@ -864,27 +957,50 @@ ibuf_read_process(struct msgbuf *msgbuf, int fd)
 	msgbuf->roff = ibuf_size(&rbuf);
 
 	if (fd != -1)
-		close(fd);
+		imsg_close_fd(fd);
 	return (1);
 
  fail:
 	/* XXX how to properly clean up is unclear */
 	if (fd != -1)
-		close(fd);
+		imsg_close_fd(fd);
 	return (-1);
 }
 
 int
-ibuf_read(int fd, struct msgbuf *msgbuf)
+ibuf_read(imsg_fd_t fd, struct msgbuf *msgbuf)
 {
+#ifdef _WIN32
+	int	n, error;
+#else
 	struct iovec	iov;
 	ssize_t		n;
+#endif
 
 	if (msgbuf->rbuf == NULL) {
 		errno = EINVAL;
 		return (-1);
 	}
 
+#ifdef _WIN32
+again:
+	n = recv((SOCKET)fd, msgbuf->rbuf + msgbuf->roff,
+	    (int)(IBUF_READ_SIZE - msgbuf->roff), 0);
+	if (n == SOCKET_ERROR) {
+		error = WSAGetLastError();
+		if (error == WSAEINTR)
+			goto again;
+		if (error == WSAEWOULDBLOCK)
+			return (1);
+		errno = EIO;
+		return (-1);
+	}
+	if (n == 0)
+		return (0);
+
+	msgbuf->roff += (size_t)n;
+	return (ibuf_read_process(msgbuf, -1));
+#else
 	iov.iov_base = msgbuf->rbuf + msgbuf->roff;
 	iov.iov_len = IBUF_READ_SIZE - msgbuf->roff;
 
@@ -903,11 +1019,15 @@ ibuf_read(int fd, struct msgbuf *msgbuf)
 	msgbuf->roff += n;
 	/* new data arrived, try to process it */
 	return (ibuf_read_process(msgbuf, -1));
+#endif
 }
 
 int
-msgbuf_read(int fd, struct msgbuf *msgbuf)
+msgbuf_read(imsg_fd_t fd, struct msgbuf *msgbuf)
 {
+#ifdef _WIN32
+	return (ibuf_read(fd, msgbuf));
+#else
 	struct msghdr		 msg;
 	struct cmsghdr		*cmsg;
 	union {
@@ -972,7 +1092,7 @@ again:
 				if (i == 0)
 					fdpass = f;
 				else
-					close(f);
+					imsg_close_fd(f);
 			}
 		}
 		/* we do not handle other ctl data level */
@@ -980,6 +1100,7 @@ again:
 
 	/* new data arrived, try to process it */
 	return (ibuf_read_process(msgbuf, fdpass));
+#endif
 }
 
 static void

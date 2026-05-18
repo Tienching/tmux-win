@@ -17,15 +17,257 @@
 #ifndef COMPAT_H
 #define COMPAT_H
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <windows.h>
+#include <io.h>
+#include <stdint.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#else
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
+#endif
 
+#ifndef _WIN32
 #include <fnmatch.h>
+#endif
 #include <limits.h>
 #include <stdio.h>
+#include <time.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <wchar.h>
+
+#ifdef _WIN32
+typedef uint32_t utf8_wchar;
+#else
+typedef wchar_t utf8_wchar;
+#endif
+
+#ifdef _WIN32
+#define TMUX_ENVIRON _environ
+#ifdef environ
+#undef environ
+#endif
+#ifndef _TMUX_WIN32_UID_T_DEFINED
+#define _TMUX_WIN32_UID_T_DEFINED
+typedef int uid_t;
+typedef int gid_t;
+#endif
+#ifndef _TMUX_WIN32_CC_T_DEFINED
+#define _TMUX_WIN32_CC_T_DEFINED
+typedef unsigned char cc_t;
+#endif
+#ifndef SIGHUP
+#define SIGHUP 1
+#endif
+#else
+#define TMUX_ENVIRON environ
+#endif
+
+#ifdef _WIN32
+#ifndef FNM_NOMATCH
+#define FNM_NOMATCH 1
+#endif
+#ifndef FNM_NOESCAPE
+#define FNM_NOESCAPE 0x01
+#endif
+#ifndef FNM_PATHNAME
+#define FNM_PATHNAME 0x02
+#endif
+#ifndef FNM_PERIOD
+#define FNM_PERIOD 0x04
+#endif
+#ifndef FNM_CASEFOLD
+#define FNM_CASEFOLD 0x08
+#endif
+int	fnmatch(const char *, const char *, int);
+#ifndef PATH_MAX
+#define PATH_MAX MAX_PATH
+#endif
+#ifndef S_IRWXU
+#define S_IRWXU (_S_IREAD|_S_IWRITE)
+#endif
+#ifndef S_IRWXG
+#define S_IRWXG 0
+#endif
+#ifndef S_IRWXO
+#define S_IRWXO 0
+#endif
+#ifndef S_IRUSR
+#define S_IRUSR _S_IREAD
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR _S_IWRITE
+#endif
+#ifndef S_IXUSR
+#define S_IXUSR 0
+#endif
+#ifndef S_IRGRP
+#define S_IRGRP 0
+#endif
+#ifndef S_IWGRP
+#define S_IWGRP 0
+#endif
+#ifndef S_IXGRP
+#define S_IXGRP 0
+#endif
+#ifndef S_IROTH
+#define S_IROTH 0
+#endif
+#ifndef S_IWOTH
+#define S_IWOTH 0
+#endif
+#ifndef S_IXOTH
+#define S_IXOTH 0
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#endif
+#ifndef O_NONBLOCK
+#define O_NONBLOCK 0
+#endif
+#ifndef TMUX_WIN32_OWNER_UID
+#define TMUX_WIN32_OWNER_UID 1
+#endif
+#ifndef WIFEXITED
+#define WIFEXITED(status) (((status) & 0x7f) == 0)
+#endif
+#ifndef WEXITSTATUS
+#define WEXITSTATUS(status) (((status) >> 8) & 0xff)
+#endif
+#ifndef WIFSIGNALED
+#define WIFSIGNALED(status) (((status) & 0x7f) != 0 && \
+	((status) & 0x7f) != 0x7f)
+#endif
+#ifndef WTERMSIG
+#define WTERMSIG(status) ((status) & 0x7f)
+#endif
+#ifndef _TMUX_WIN32_TERMIOS_DEFINED
+#define _TMUX_WIN32_TERMIOS_DEFINED
+#ifndef NCCS
+#define NCCS 32
+#endif
+struct termios {
+	unsigned int	c_iflag;
+	unsigned int	c_oflag;
+	unsigned int	c_cflag;
+	unsigned int	c_lflag;
+	unsigned char	c_cc[NCCS];
+};
+struct winsize {
+	unsigned short	ws_row;
+	unsigned short	ws_col;
+	unsigned short	ws_xpixel;
+	unsigned short	ws_ypixel;
+};
+#endif
+#ifndef TCSANOW
+#define TCSANOW 0
+#endif
+#ifndef TCSAFLUSH
+#define TCSAFLUSH 2
+#endif
+#ifndef VMIN
+#define VMIN 16
+#endif
+#ifndef VTIME
+#define VTIME 17
+#endif
+#ifndef VERASE
+#define VERASE 2
+#endif
+#ifndef _POSIX_VDISABLE
+#define _POSIX_VDISABLE 0xff
+#endif
+#ifndef ICRNL
+#define ICRNL 0x0001
+#endif
+#ifndef IXANY
+#define IXANY 0x0002
+#endif
+#ifndef IXON
+#define IXON 0x0004
+#endif
+#ifndef IXOFF
+#define IXOFF 0x0008
+#endif
+#ifndef INLCR
+#define INLCR 0x0010
+#endif
+#ifndef IGNCR
+#define IGNCR 0x0020
+#endif
+#ifndef IGNBRK
+#define IGNBRK 0x0040
+#endif
+#ifndef ISTRIP
+#define ISTRIP 0x0080
+#endif
+#ifndef IUTF8
+#define IUTF8 0x0100
+#endif
+#ifndef OPOST
+#define OPOST 0x0001
+#endif
+#ifndef ONLCR
+#define ONLCR 0x0002
+#endif
+#ifndef OCRNL
+#define OCRNL 0x0004
+#endif
+#ifndef ONLRET
+#define ONLRET 0x0008
+#endif
+#ifndef CREAD
+#define CREAD 0x0001
+#endif
+#ifndef CS8
+#define CS8 0x0002
+#endif
+#ifndef HUPCL
+#define HUPCL 0x0004
+#endif
+#ifndef IEXTEN
+#define IEXTEN 0x0001
+#endif
+#ifndef ICANON
+#define ICANON 0x0002
+#endif
+#ifndef ECHO
+#define ECHO 0x0004
+#endif
+#ifndef ECHOE
+#define ECHOE 0x0008
+#endif
+#ifndef ECHONL
+#define ECHONL 0x0010
+#endif
+#ifndef ECHOCTL
+#define ECHOCTL 0x0020
+#endif
+#ifndef ISIG
+#define ISIG 0x0040
+#endif
+#ifndef NOFLSH
+#define NOFLSH 0x0080
+#endif
+#ifndef NOKERNINFO
+#define NOKERNINFO 0
+#endif
+#ifndef TIOCGWINSZ
+#define TIOCGWINSZ 0
+#endif
+#ifndef TIOCSWINSZ
+#define TIOCSWINSZ 0
+#endif
+#endif
 
 #ifdef HAVE_EVENT2_EVENT_H
 #include <event2/event.h>
@@ -103,31 +345,59 @@ void	warnx(const char *, ...);
 #endif
 
 #ifndef _PATH_BSHELL
+#ifdef _WIN32
+#define _PATH_BSHELL	"cmd.exe"
+#else
 #define _PATH_BSHELL	"/bin/sh"
+#endif
 #endif
 
 #ifndef _PATH_TMP
+#ifdef _WIN32
+#define _PATH_TMP	".\\"
+#else
 #define _PATH_TMP	"/tmp/"
+#endif
 #endif
 
 #ifndef _PATH_DEVNULL
+#ifdef _WIN32
+#define _PATH_DEVNULL	"NUL"
+#else
 #define _PATH_DEVNULL	"/dev/null"
+#endif
 #endif
 
 #ifndef _PATH_TTY
+#ifdef _WIN32
+#define _PATH_TTY	"CON"
+#else
 #define _PATH_TTY	"/dev/tty"
+#endif
 #endif
 
 #ifndef _PATH_DEV
+#ifdef _WIN32
+#define _PATH_DEV	""
+#else
 #define _PATH_DEV	"/dev/"
+#endif
 #endif
 
 #ifndef _PATH_DEFPATH
+#ifdef _WIN32
+#define _PATH_DEFPATH	"C:\\Windows\\System32;C:\\Windows"
+#else
 #define _PATH_DEFPATH	"/usr/bin:/bin"
+#endif
 #endif
 
 #ifndef _PATH_VI
+#ifdef _WIN32
+#define _PATH_VI	"notepad.exe"
+#else
 #define _PATH_VI	"/usr/bin/vi"
+#endif
 #endif
 
 #ifndef __OpenBSD__
@@ -384,6 +654,13 @@ void		 setproctitle(const char *, ...);
 int		 clock_gettime(int, struct timespec *);
 #endif
 
+#ifdef _WIN32
+/* win32-time.c */
+struct tm	*localtime_r(const time_t *, struct tm *);
+struct tm	*gmtime_r(const time_t *, struct tm *);
+char		*ctime_r(const time_t *, char *);
+#endif
+
 #ifndef HAVE_B64_NTOP
 /* base64.c */
 #undef b64_ntop
@@ -455,9 +732,9 @@ int		 systemd_move_to_new_cgroup(char **);
 
 #ifdef HAVE_UTF8PROC
 /* utf8proc.c */
-int		 utf8proc_wcwidth(wchar_t);
-int		 utf8proc_mbtowc(wchar_t *, const char *, size_t);
-int		 utf8proc_wctomb(char *, wchar_t);
+int		 utf8proc_wcwidth(utf8_wchar);
+int		 utf8proc_mbtowc(utf8_wchar *, const char *, size_t);
+int		 utf8proc_wctomb(char *, utf8_wchar);
 #endif
 
 #ifdef NEED_FUZZING

@@ -16,22 +16,45 @@
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <sys/types.h>
+#else
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#endif
 
+#include <ctype.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <langinfo.h>
+#endif
 #include <locale.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include "tmux.h"
+
+#ifdef _WIN32
+#include "compat/win32-command.h"
+#include "compat/win32-socketpair.h"
+#ifndef PATH_MAX
+#define PATH_MAX MAX_PATH
+#endif
+#endif
 
 struct options	*global_options;	/* server options */
 struct options	*global_s_options;	/* session options */
@@ -62,6 +85,15 @@ usage(int status)
 static const char *
 getshell(void)
 {
+#ifdef _WIN32
+	const char	*shell;
+
+	if ((shell = getenv("ComSpec")) != NULL && checkshell(shell))
+		return (shell);
+	if ((shell = getenv("SHELL")) != NULL && checkshell(shell))
+		return (shell);
+	return ("C:\\Windows\\System32\\cmd.exe");
+#else
 	struct passwd	*pw;
 	const char	*shell;
 
@@ -74,11 +106,33 @@ getshell(void)
 		return (pw->pw_shell);
 
 	return (_PATH_BSHELL);
+#endif
+}
+
+const char *
+get_default_shell(void)
+{
+	return (getshell());
 }
 
 int
 checkshell(const char *shell)
 {
+#ifdef _WIN32
+	char	 resolved[MAX_PATH];
+	DWORD	 n;
+
+	if (shell == NULL || *shell == '\0')
+		return (0);
+	if (areshell(shell))
+		return (0);
+	n = SearchPathA(NULL, shell, ".exe", sizeof resolved, resolved, NULL);
+	if (n == 0 || n >= sizeof resolved)
+		return (0);
+	if (areshell(resolved))
+		return (0);
+	return (1);
+#else
 	if (shell == NULL || *shell != '/')
 		return (0);
 	if (areshell(shell))
@@ -86,6 +140,51 @@ checkshell(const char *shell)
 	if (access(shell, X_OK) != 0)
 		return (0);
 	return (1);
+#endif
+}
+
+int
+path_is_absolute(const char *path)
+{
+#ifdef _WIN32
+	if (path == NULL || *path == '\0')
+		return (0);
+	if (*path == '/' || *path == '\\')
+		return (1);
+	if (isalpha((u_char)path[0]) && path[1] == ':')
+		return (1);
+	return (0);
+#else
+	return (path != NULL && *path == '/');
+#endif
+}
+
+int
+path_is_directory(const char *path)
+{
+#ifdef _WIN32
+	DWORD	 attrs;
+	wchar_t	*wide_path;
+
+	if (path == NULL || *path == '\0')
+		return (0);
+	wide_path = win32_utf8_to_wide_path(path);
+	if (wide_path == NULL)
+		return (0);
+	attrs = GetFileAttributesW(wide_path);
+	free(wide_path);
+	if (attrs == INVALID_FILE_ATTRIBUTES)
+		return (0);
+	return (!!(attrs & FILE_ATTRIBUTE_DIRECTORY));
+#else
+	struct stat	sb;
+
+	if (path == NULL || *path == '\0')
+		return (0);
+	if (stat(path, &sb) != 0)
+		return (0);
+	return (S_ISDIR(sb.st_mode));
+#endif
 }
 
 static int
@@ -95,6 +194,10 @@ areshell(const char *shell)
 
 	if ((ptr = strrchr(shell, '/')) != NULL)
 		ptr++;
+#ifdef _WIN32
+	else if ((ptr = strrchr(shell, '\\')) != NULL)
+		ptr++;
+#endif
 	else
 		ptr = shell;
 	progname = getprogname();
@@ -112,7 +215,8 @@ expand_path(const char *path, const char *home)
 	const char		*end;
 	struct environ_entry	*value;
 
-	if (strncmp(path, "~/", 2) == 0) {
+	if (strncmp(path, "~/", 2) == 0 ||
+	    strncmp(path, "~\\", 2) == 0) {
 		if (home == NULL)
 			return (NULL);
 		xasprintf(&expanded, "%s%s", home, path + 1);
@@ -120,7 +224,11 @@ expand_path(const char *path, const char *home)
 	}
 
 	if (*path == '$') {
+#ifdef _WIN32
+		end = strpbrk(path, "/\\");
+#else
 		end = strchr(path, '/');
+#endif
 		if (end == NULL)
 			name = xstrdup(path + 1);
 		else
@@ -135,27 +243,82 @@ expand_path(const char *path, const char *home)
 		return (expanded);
 	}
 
+#ifdef _WIN32
+	if (*path == '%') {
+		end = strchr(path + 1, '%');
+		if (end == NULL || end == path + 1)
+			return (NULL);
+		name = xstrndup(path + 1, end - path - 1);
+		value = environ_find(global_environ, name);
+		free(name);
+		if (value == NULL)
+			return (NULL);
+		xasprintf(&expanded, "%s%s", value->value, end + 1);
+		return (expanded);
+	}
+#endif
+
 	return (xstrdup(path));
 }
+
+#ifdef _WIN32
+static int
+expand_paths_drive_colon(const char *start, const char *cp)
+{
+	return (cp == start + 1 && isalpha((unsigned char)start[0]));
+}
+
+static char *
+expand_paths_next(char **tmp)
+{
+	char	*start = *tmp, *cp;
+
+	if (start == NULL)
+		return (NULL);
+	for (cp = start; *cp != '\0'; cp++) {
+		if (*cp == ';' ||
+		    (*cp == ':' && !expand_paths_drive_colon(start, cp))) {
+			*cp = '\0';
+			*tmp = cp + 1;
+			return (start);
+		}
+	}
+	*tmp = NULL;
+	return (start);
+}
+#endif
 
 static void
 expand_paths(const char *s, char ***paths, u_int *n, int no_realpath)
 {
 	const char	*home = find_home();
-	char		*copy, *next, *tmp, resolved[PATH_MAX], *expanded;
+	char		*copy, *next, *tmp, *expanded;
+#ifndef _WIN32
+	char		 resolved[PATH_MAX];
+#endif
 	char		*path;
 	u_int		 i;
 
+#ifdef _WIN32
+	(void)no_realpath;
+#endif
 	*paths = NULL;
 	*n = 0;
 
 	copy = tmp = xstrdup(s);
+#ifdef _WIN32
+	while ((next = expand_paths_next(&tmp)) != NULL) {
+#else
 	while ((next = strsep(&tmp, ":")) != NULL) {
+#endif
 		expanded = expand_path(next, home);
 		if (expanded == NULL) {
 			log_debug("%s: invalid path: %s", __func__, next);
 			continue;
 		}
+#ifdef _WIN32
+		path = expanded;
+#else
 		if (no_realpath)
 			path = expanded;
 		else {
@@ -168,6 +331,7 @@ expand_paths(const char *s, char ***paths, u_int *n, int no_realpath)
 			path = xstrdup(resolved);
 			free(expanded);
 		}
+#endif
 		for (i = 0; i < *n; i++) {
 			if (strcmp(path, (*paths)[i]) == 0)
 				break;
@@ -186,6 +350,39 @@ expand_paths(const char *s, char ***paths, u_int *n, int no_realpath)
 static char *
 make_label(const char *label, char **cause)
 {
+#ifdef _WIN32
+	char	base[MAX_PATH], *clean, *dir, *path;
+	DWORD	n;
+
+	*cause = NULL;
+	if (label == NULL)
+		label = "default";
+	if ((clean = clean_name(label, "\\/:*?\"<>|")) == NULL) {
+		xasprintf(cause, "invalid socket name: %s", label);
+		return (NULL);
+	}
+	n = GetEnvironmentVariableA("LOCALAPPDATA", base, sizeof base);
+	if (n == 0 || n >= sizeof base)
+		n = GetTempPathA(sizeof base, base);
+	if (n == 0 || n >= sizeof base) {
+		xasprintf(cause, "couldn't find temporary directory");
+		free(clean);
+		return (NULL);
+	}
+	xasprintf(&dir, "%s\\tmux", base);
+	if (!CreateDirectoryA(dir, NULL) &&
+	    GetLastError() != ERROR_ALREADY_EXISTS) {
+		xasprintf(cause, "couldn't create directory %s "
+		    "(Windows error %lu)", dir, GetLastError());
+		free(dir);
+		free(clean);
+		return (NULL);
+	}
+	xasprintf(&path, "%s\\%s.endpoint", dir, clean);
+	free(dir);
+	free(clean);
+	return (path);
+#else
 	char		**paths, *path, *base;
 	u_int		  i, n;
 	struct stat	  sb;
@@ -233,6 +430,7 @@ make_label(const char *label, char **cause)
 fail:
 	free(base);
 	return (NULL);
+#endif
 }
 
 char *
@@ -242,6 +440,10 @@ shell_argv0(const char *shell, int is_login)
 	char		*argv0;
 
 	slash = strrchr(shell, '/');
+#ifdef _WIN32
+	if (slash == NULL)
+		slash = strrchr(shell, '\\');
+#endif
 	if (slash != NULL && slash[1] != '\0')
 		name = slash + 1;
 	else
@@ -256,6 +458,9 @@ shell_argv0(const char *shell, int is_login)
 void
 setblocking(int fd, int state)
 {
+#ifdef _WIN32
+	win32_socket_set_blocking((uintptr_t)fd, state);
+#else
 	int mode;
 
 	if ((mode = fcntl(fd, F_GETFL)) != -1) {
@@ -265,11 +470,15 @@ setblocking(int fd, int state)
 			mode &= ~O_NONBLOCK;
 		fcntl(fd, F_SETFL, mode);
 	}
+#endif
 }
 
 uint64_t
 get_timer(void)
 {
+#ifdef _WIN32
+	return (GetTickCount64());
+#else
 	struct timespec	ts;
 
 	/*
@@ -279,6 +488,7 @@ get_timer(void)
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
 		clock_gettime(CLOCK_REALTIME, &ts);
 	return ((ts.tv_sec * 1000ULL) + (ts.tv_nsec / 1000000ULL));
+#endif
 }
 
 char *
@@ -314,6 +524,15 @@ sig2name(int signo)
 const char *
 find_cwd(void)
 {
+#ifdef _WIN32
+	static char	cwd[MAX_PATH];
+	DWORD		n;
+
+	n = GetCurrentDirectoryA(sizeof cwd, cwd);
+	if (n == 0 || n >= sizeof cwd)
+		return (NULL);
+	return (cwd);
+#else
 	char		 resolved1[PATH_MAX], resolved2[PATH_MAX];
 	static char	 cwd[PATH_MAX];
 	const char	*pwd;
@@ -334,11 +553,40 @@ find_cwd(void)
 	if (strcmp(resolved1, resolved2) != 0)
 		return (cwd);
 	return (pwd);
+#endif
 }
 
 const char *
 find_home(void)
 {
+#ifdef _WIN32
+	static char	 home[MAX_PATH];
+	const char	*value;
+	DWORD		 n;
+
+	if ((value = getenv("USERPROFILE")) != NULL && *value != '\0')
+		return (value);
+	if (home[0] != '\0')
+		return (home);
+	if ((value = getenv("HOMEDRIVE")) != NULL && *value != '\0') {
+		strlcpy(home, value, sizeof home);
+		if ((value = getenv("HOMEPATH")) != NULL)
+			strlcat(home, value, sizeof home);
+		if (home[0] != '\0')
+			return (home);
+	}
+	if ((value = getenv("TEMP")) != NULL && *value != '\0')
+		return (value);
+	if ((value = getenv("TMP")) != NULL && *value != '\0')
+		return (value);
+	n = GetTempPathA(sizeof home, home);
+	if (n != 0 && n < sizeof home && home[0] != '\0')
+		return (home);
+	n = GetWindowsDirectoryA(home, sizeof home);
+	if (n != 0 && n < sizeof home && home[0] != '\0')
+		return (home);
+	return (NULL);
+#else
 	struct passwd		*pw;
 	static const char	*home;
 
@@ -355,6 +603,23 @@ find_home(void)
 	}
 
 	return (home);
+#endif
+}
+
+const char *
+find_default_cwd(void)
+{
+	const char	*path;
+
+	if ((path = find_home()) != NULL)
+		return (path);
+#ifdef _WIN32
+	if ((path = find_cwd()) != NULL)
+		return (path);
+	return ("C:\\");
+#else
+	return ("/");
+#endif
 }
 
 const char *
@@ -368,12 +633,16 @@ main(int argc, char **argv)
 {
 	char					*path = NULL, *label = NULL;
 	char					*cause, **var;
-	const char				*s, *cwd;
+	const char				*s, *cwd, *slash;
 	int					 opt, keys, feat = 0, fflag = 0;
 	uint64_t				 flags = 0;
 	const struct options_table_entry	*oe;
 	u_int					 i;
 
+#ifdef _WIN32
+	if (setlocale(LC_CTYPE, "") == NULL)
+		errx(1, "invalid LC_ALL, LC_CTYPE or LANG");
+#else
 	if (setlocale(LC_CTYPE, "en_US.UTF-8") == NULL &&
 	    setlocale(LC_CTYPE, "C.UTF-8") == NULL) {
 		if (setlocale(LC_CTYPE, "") == NULL)
@@ -382,6 +651,7 @@ main(int argc, char **argv)
 		if (strcasecmp(s, "UTF-8") != 0 && strcasecmp(s, "UTF8") != 0)
 			errx(1, "need UTF-8 locale (LC_CTYPE) but have %s", s);
 	}
+#endif
 
 	setlocale(LC_TIME, "");
 	tzset();
@@ -390,7 +660,7 @@ main(int argc, char **argv)
 		flags = CLIENT_LOGIN;
 
 	global_environ = environ_create();
-	for (var = environ; *var != NULL; var++)
+	for (var = TMUX_ENVIRON; *var != NULL; var++)
 		environ_put(global_environ, *var, 0);
 	if ((cwd = find_cwd()) != NULL)
 		environ_set(global_environ, "PWD", 0, "%s", cwd);
@@ -416,6 +686,7 @@ main(int argc, char **argv)
 		case 'f':
 			if (!fflag) {
 				fflag = 1;
+				cfg_user_files = 1;
 				for (i = 0; i < cfg_nfiles; i++)
 					free(cfg_files[i]);
 				cfg_nfiles = 0;
@@ -467,8 +738,12 @@ main(int argc, char **argv)
 	if ((flags & CLIENT_NOFORK) && argc != 0)
 		usage(1);
 
+#ifdef _WIN32
+	ptm_fd = -1;
+#else
 	if ((ptm_fd = getptmfd()) == -1)
 		err(1, "getptmfd");
+#endif
 	if (pledge("stdio rpath wpath cpath flock fattr unix getpw sendfd "
 	    "recvfd proc exec tty ps", NULL) != 0)
 		err(1, "pledge");
@@ -517,8 +792,14 @@ main(int argc, char **argv)
 	/* Override keys to vi if VISUAL or EDITOR are set. */
 	if ((s = getenv("VISUAL")) != NULL || (s = getenv("EDITOR")) != NULL) {
 		options_set_string(global_options, "editor", 0, "%s", s);
-		if (strrchr(s, '/') != NULL)
-			s = strrchr(s, '/') + 1;
+		slash = strrchr(s, '/');
+#ifdef _WIN32
+		if (strrchr(s, '\\') != NULL &&
+		    (slash == NULL || strrchr(s, '\\') > slash))
+			slash = strrchr(s, '\\');
+#endif
+		if (slash != NULL)
+			s = slash + 1;
 		if (strstr(s, "vi") != NULL)
 			keys = MODEKEY_VI;
 		else

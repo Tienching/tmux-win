@@ -17,8 +17,10 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/wait.h>
 #include <sys/uio.h>
+#endif
 
 #include <signal.h>
 #include <stdlib.h>
@@ -27,6 +29,11 @@
 #include <unistd.h>
 
 #include "tmux.h"
+
+#ifdef _WIN32
+#include "compat/win32-pty.h"
+#include "compat/win32-socketpair.h"
+#endif
 
 static void	server_destroy_session_group(struct session *);
 
@@ -321,6 +328,23 @@ server_destroy_pane(struct window_pane *wp, int notify)
 	char			*expanded;
 	u_int			 sx = screen_size_x(&wp->base);
 	u_int			 sy = screen_size_y(&wp->base);
+
+#ifdef _WIN32
+	if (wp->win32_pty != NULL) {
+		if (~wp->flags & PANE_EXITED)
+			win32_pty_terminate((struct win32_pty *)wp->win32_pty,
+			    1);
+		if (wp->event != NULL) {
+			bufferevent_free(wp->event);
+			wp->event = NULL;
+		}
+		win32_socket_close(wp->win32_socket);
+		win32_pty_close((struct win32_pty *)wp->win32_pty);
+		free(wp->win32_pty);
+		wp->win32_pty = NULL;
+		wp->win32_socket = (uintptr_t)-1;
+	}
+#endif
 
 	if (wp->fd != -1) {
 #ifdef HAVE_UTEMPTER

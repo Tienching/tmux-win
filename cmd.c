@@ -19,8 +19,10 @@
 #include <sys/types.h>
 #include <sys/time.h>
 
+#ifndef _WIN32
 #include <fnmatch.h>
 #include <pwd.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>

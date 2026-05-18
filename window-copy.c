@@ -339,7 +339,7 @@ struct window_copy_mode_data {
 };
 
 static void
-window_copy_scroll_timer(__unused int fd, __unused short events, void *arg)
+window_copy_scroll_timer(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct window_mode_entry	*wme = arg;
 	struct window_pane		*wp = wme->wp;

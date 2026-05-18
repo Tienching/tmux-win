@@ -26,6 +26,12 @@
 
 #include "tmux.h"
 
+#ifdef _WIN32
+#include "compat/win32-command.h"
+#include "compat/win32-socketpair.h"
+#include "compat/win32-spawn.h"
+#endif
+
 /*
  * Set up the environment and create a new window and pane or a new pane.
  *
@@ -47,6 +53,18 @@
  *
  * - remaining environment, comes from the session.
  */
+
+#ifdef _WIN32
+static const char	*spawn_win32_get_shell(struct environ *);
+static int		 spawn_win32_cwd_is_unc(const char *);
+static int		 spawn_win32_cwd_is_process_supported(const char *);
+static char		*spawn_win32_cmd_pushd(const char *, const char *);
+static char		*spawn_win32_normalize_cwd(const char *);
+static char	       **spawn_win32_make_environment(struct environ *, int *);
+static void		spawn_win32_free_environment(char **, int);
+static int		 spawn_win32_pane(struct window_pane *, struct environ *,
+			    struct winsize *, char **);
+#endif
 
 static void
 spawn_log(const char *from, struct spawn_context *sc)
@@ -71,6 +89,225 @@ spawn_log(const char *from, struct spawn_context *sc)
 	log_debug("%s: name=%s", from, sc->name == NULL ? "none" : sc->name);
 }
 
+#ifdef _WIN32
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+
+static const char *
+spawn_win32_get_shell(struct environ *env)
+{
+	struct environ_entry	*ee;
+
+	ee = environ_find(env, "ComSpec");
+	if (ee != NULL && ee->value != NULL && checkshell(ee->value))
+		return (ee->value);
+	ee = environ_find(env, "SHELL");
+	if (ee != NULL && ee->value != NULL && checkshell(ee->value))
+		return (ee->value);
+	return (get_default_shell());
+}
+
+static int
+spawn_win32_cwd_is_unc(const char *cwd)
+{
+	return (cwd != NULL && cwd[0] == '\\' && cwd[1] == '\\' &&
+	    strncmp(cwd, "\\\\?\\", 4) != 0);
+}
+
+static int
+spawn_win32_cwd_is_process_supported(const char *cwd)
+{
+	if (cwd == NULL)
+		return (0);
+	if (isalpha((u_char)cwd[0]) && cwd[1] == ':' &&
+	    (cwd[2] == '\\' || cwd[2] == '/') && strlen(cwd) >= MAX_PATH)
+		return (0);
+	return (1);
+}
+
+static char *
+spawn_win32_cmd_pushd(const char *cwd, const char *cmd)
+{
+	char	*new_cmd;
+
+	if (cmd == NULL)
+		xasprintf(&new_cmd, "pushd \"%s\"", cwd);
+	else
+		xasprintf(&new_cmd, "pushd \"%s\" && %s", cwd, cmd);
+	return (new_cmd);
+}
+
+static char *
+spawn_win32_normalize_cwd(const char *cwd)
+{
+	char	*resolved;
+
+	if (cwd == NULL)
+		return (NULL);
+	if (strncmp(cwd, "\\\\?\\", 4) == 0 &&
+	    isalpha((u_char)cwd[4]) && cwd[5] == ':')
+		return (xstrdup(cwd + 4));
+	if (strncmp(cwd, "\\\\?\\UNC\\", 8) == 0) {
+		xasprintf(&resolved, "\\\\%s", cwd + 8);
+		return (resolved);
+	}
+	return (xstrdup(cwd));
+}
+
+static char **
+spawn_win32_make_environment(struct environ *env, int *count)
+{
+	struct environ_entry	*ee;
+	char			**environment;
+	int			  n = 0, i = 0;
+
+	for (ee = environ_first(env); ee != NULL; ee = environ_next(ee)) {
+		if (ee->value != NULL && *ee->name != '\0' &&
+		    (~ee->flags & ENVIRON_HIDDEN))
+			n++;
+	}
+
+	environment = xcalloc(n == 0 ? 1 : n, sizeof *environment);
+	for (ee = environ_first(env); ee != NULL; ee = environ_next(ee)) {
+		if (ee->value == NULL || *ee->name == '\0' ||
+		    (ee->flags & ENVIRON_HIDDEN))
+			continue;
+		xasprintf(&environment[i++], "%s=%s", ee->name, ee->value);
+	}
+	*count = n;
+	return (environment);
+}
+
+static void
+spawn_win32_free_environment(char **environment, int count)
+{
+	int	i;
+
+	for (i = 0; i < count; i++)
+		free(environment[i]);
+	free(environment);
+}
+
+static int
+spawn_win32_pane(struct window_pane *wp, struct environ *child,
+    struct winsize *ws, char **cause)
+{
+	struct win32_spawn_options	 options;
+	struct win32_pty		*pty;
+	uintptr_t			 master;
+	char				**environment, *shell_argv[4];
+	char				**spawn_argv;
+	char				 *cmd_cwd = NULL, *normalized_cwd;
+	const char			 *cwd, *process_cwd, *shell;
+	int				  environment_count, spawn_argc;
+	int				  cwd_is_unc;
+
+	normalized_cwd = spawn_win32_normalize_cwd(wp->cwd);
+	free(wp->cwd);
+	wp->cwd = normalized_cwd;
+	cwd = wp->cwd;
+	if (!path_is_directory(cwd) ||
+	    !spawn_win32_cwd_is_process_supported(cwd)) {
+		cwd = find_default_cwd();
+		free(wp->cwd);
+		wp->cwd = xstrdup(cwd);
+	}
+	environ_set(child, "PWD", 0, "%s", wp->cwd);
+	process_cwd = wp->cwd;
+	cwd_is_unc = spawn_win32_cwd_is_unc(wp->cwd);
+
+	if (wp->argc == 0) {
+		if (checkshell(wp->shell))
+			shell = wp->shell;
+		else
+			shell = spawn_win32_get_shell(child);
+		if (environ_find(child, "ComSpec") == NULL)
+			environ_set(child, "ComSpec", 0, "%s",
+			    spawn_win32_get_shell(child));
+		if (cwd_is_unc && win32_shell_is_cmd(shell)) {
+			cmd_cwd = spawn_win32_cmd_pushd(wp->cwd, NULL);
+			shell_argv[0] = (char *)shell;
+			shell_argv[1] = "/d";
+			shell_argv[2] = "/k";
+			shell_argv[3] = cmd_cwd;
+			spawn_argc = 4;
+			process_cwd = find_default_cwd();
+		} else {
+			shell_argv[0] = (char *)shell;
+			spawn_argc = 1;
+		}
+		spawn_argv = shell_argv;
+	} else if (wp->argc == 1) {
+		if (checkshell(wp->shell))
+			shell = wp->shell;
+		else
+			shell = spawn_win32_get_shell(child);
+		if (environ_find(child, "ComSpec") == NULL)
+			environ_set(child, "ComSpec", 0, "%s",
+			    spawn_win32_get_shell(child));
+		spawn_argc = win32_shell_command_argv(shell, wp->argv[0],
+		    shell_argv);
+		spawn_argv = shell_argv;
+	} else {
+		spawn_argc = wp->argc;
+		spawn_argv = wp->argv;
+	}
+	if (cmd_cwd == NULL && cwd_is_unc && spawn_argc == 4 &&
+	    win32_shell_is_cmd(spawn_argv[0]) &&
+	    _stricmp(spawn_argv[1], "/d") == 0 &&
+	    (_stricmp(spawn_argv[2], "/c") == 0 ||
+	    _stricmp(spawn_argv[2], "/k") == 0)) {
+		cmd_cwd = spawn_win32_cmd_pushd(wp->cwd, spawn_argv[3]);
+		shell_argv[0] = spawn_argv[0];
+		shell_argv[1] = spawn_argv[1];
+		shell_argv[2] = spawn_argv[2];
+		shell_argv[3] = cmd_cwd;
+		spawn_argv = shell_argv;
+		process_cwd = find_default_cwd();
+	}
+
+	environment = spawn_win32_make_environment(child, &environment_count);
+	pty = xcalloc(1, sizeof *pty);
+
+	memset(&options, 0, sizeof options);
+	options.argc = spawn_argc;
+	options.argv = spawn_argv;
+	options.cwd = process_cwd;
+	options.environment = (const char *const *)environment;
+	options.environment_count = environment_count;
+	options.columns = ws->ws_col == 0 ? 80 : ws->ws_col;
+	options.rows = ws->ws_row == 0 ? 24 : ws->ws_row;
+
+	if (win32_spawn_pty(&options, pty, &master) != 0) {
+		xasprintf(cause, "spawn failed");
+		free(pty);
+		free(cmd_cwd);
+		spawn_win32_free_environment(environment, environment_count);
+		return (-1);
+	}
+	free(cmd_cwd);
+	spawn_win32_free_environment(environment, environment_count);
+
+	if (win32_socket_set_blocking(master, 0) != 0) {
+		xasprintf(cause, "set nonblocking failed");
+		win32_pty_terminate(pty, 1);
+		win32_socket_close(master);
+		win32_pty_close(pty);
+		free(pty);
+		return (-1);
+	}
+
+	wp->fd = -1;
+	wp->win32_socket = master;
+	wp->win32_pty = pty;
+	wp->pid = (pid_t)win32_pty_process_id(pty);
+	xsnprintf(wp->tty, sizeof wp->tty, "conpty:%lu",
+	    win32_pty_process_id(pty));
+	return (0);
+}
+#endif
+
 struct winlink *
 spawn_window(struct spawn_context *sc, char **cause)
 {
@@ -94,7 +331,11 @@ spawn_window(struct spawn_context *sc, char **cause)
 		w = sc->wl->window;
 		if (~sc->flags & SPAWN_KILL) {
 			TAILQ_FOREACH(wp, &w->panes, entry) {
-				if (wp->fd != -1)
+				if (wp->fd != -1
+#ifdef _WIN32
+				    || wp->win32_pty != NULL
+#endif
+				    )
 					break;
 			}
 			if (wp != NULL) {
@@ -214,17 +455,23 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	struct window_pane	 *new_wp;
 	struct environ		 *child;
 	struct environ_entry	 *ee;
-	char			**argv, *cp, **argvp, *argv0, *cwd, *new_cwd;
+	char			**argv, *cp, *cwd, *new_cwd;
+	const char		 *cmd, *tmp;
+#ifndef _WIN32
+	char			**argvp, *argv0;
 	char			  path[PATH_MAX];
-	const char		 *cmd, *tmp, *home = find_home();
+	const char		 *home = find_home();
 	const char		 *actual_cwd = NULL;
+#endif
 	int			  argc;
 	u_int			  idx;
-	struct termios		  now;
 	u_int			  hlimit;
 	struct winsize		  ws;
+#ifndef _WIN32
+	struct termios		  now;
 	sigset_t		  set, oldset;
 	key_code		  key;
+#endif
 
 	spawn_log(__func__, sc);
 
@@ -234,6 +481,15 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	 */
 	if (sc->cwd != NULL) {
 		cwd = format_single(item, sc->cwd, c, target->s, NULL, NULL);
+#ifdef _WIN32
+		if (!path_is_absolute(cwd)) {
+			xasprintf(&new_cwd, "%s%s%s",
+			    server_client_get_cwd(c, target->s),
+			    *cwd != '\0' ? "\\" : "", cwd);
+			free(cwd);
+			cwd = new_cwd;
+		}
+#else
 		if (*cwd != '/') {
 			xasprintf(&new_cwd, "%s%s%s",
 			    server_client_get_cwd(c, target->s),
@@ -241,6 +497,7 @@ spawn_pane(struct spawn_context *sc, char **cause)
 			free(cwd);
 			cwd = new_cwd;
 		}
+#endif
 	} else if (~sc->flags & SPAWN_RESPAWN)
 		cwd = xstrdup(server_client_get_cwd(c, target->s));
 	else
@@ -252,7 +509,11 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	 */
 	hlimit = options_get_number(s->options, "history-limit");
 	if (sc->flags & SPAWN_RESPAWN) {
-		if (sc->wp0->fd != -1 && (~sc->flags & SPAWN_KILL)) {
+		if ((sc->wp0->fd != -1
+#ifdef _WIN32
+		    || sc->wp0->win32_pty != NULL
+#endif
+		    ) && (~sc->flags & SPAWN_KILL)) {
 			window_pane_index(sc->wp0, &idx);
 			xasprintf(cause, "pane %s:%d.%u still active",
 			    s->name, sc->wl->idx, idx);
@@ -263,6 +524,25 @@ spawn_pane(struct spawn_context *sc, char **cause)
 			bufferevent_free(sc->wp0->event);
 			close(sc->wp0->fd);
 		}
+#ifdef _WIN32
+		if (sc->wp0->win32_pty != NULL) {
+			if (event_initialized(&sc->wp0->win32_pane_poll_event))
+				event_del(&sc->wp0->win32_pane_poll_event);
+			if (~sc->wp0->flags & PANE_EXITED) {
+				win32_pty_terminate(
+				    (struct win32_pty *)sc->wp0->win32_pty, 1);
+			}
+			if (sc->wp0->event != NULL) {
+				bufferevent_free(sc->wp0->event);
+				sc->wp0->event = NULL;
+			}
+			win32_socket_close(sc->wp0->win32_socket);
+			win32_pty_close((struct win32_pty *)sc->wp0->win32_pty);
+			free(sc->wp0->win32_pty);
+			sc->wp0->win32_pty = NULL;
+			sc->wp0->win32_socket = (uintptr_t)-1;
+		}
+#endif
 		window_pane_reset_mode_all(sc->wp0);
 		screen_reinit(&sc->wp0->base);
 		input_free(sc->wp0->ictx);
@@ -335,8 +615,13 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	/* Then the shell. If respawning, use the old one. */
 	if (~sc->flags & SPAWN_RESPAWN) {
 		tmp = options_get_string(s->options, "default-shell");
-		if (!checkshell(tmp))
+		if (!checkshell(tmp)) {
+#ifdef _WIN32
+			tmp = spawn_win32_get_shell(child);
+#else
 			tmp = _PATH_BSHELL;
+#endif
+		}
 		free(new_wp->shell);
 		new_wp->shell = xstrdup(tmp);
 	}
@@ -360,9 +645,11 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	ws.ws_xpixel = w->xpixel * ws.ws_col;
 	ws.ws_ypixel = w->ypixel * ws.ws_row;
 
+#ifndef _WIN32
 	/* Block signals until fork has completed. */
 	sigfillset(&set);
 	sigprocmask(SIG_BLOCK, &set, &oldset);
+#endif
 
 	/* If the command is empty, don't fork a child process. */
 	if (sc->flags & SPAWN_EMPTY) {
@@ -372,7 +659,22 @@ spawn_pane(struct spawn_context *sc, char **cause)
 		goto complete;
 	}
 
-    /* Store current working directory and change to new one. */
+#ifdef _WIN32
+	if (spawn_win32_pane(new_wp, child, &ws, cause) != 0) {
+		new_wp->fd = -1;
+		if (~sc->flags & SPAWN_RESPAWN) {
+			server_client_remove_pane(new_wp);
+			layout_close_pane(new_wp);
+			window_remove_pane(w, new_wp);
+		}
+		environ_free(child);
+		return (NULL);
+	}
+	goto complete;
+#endif
+
+#ifndef _WIN32
+	/* Store current working directory and change to new one. */
 	if (getcwd(path, sizeof path) != NULL) {
 		if (chdir(new_wp->cwd) == 0)
 			actual_cwd = new_wp->cwd;
@@ -482,8 +784,9 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	execl(new_wp->shell, argv0, (char *)NULL);
 	_exit(1);
 
+#endif
 complete:
-#ifdef HAVE_UTEMPTER
+#if defined(HAVE_UTEMPTER) && !defined(_WIN32)
 	if (~new_wp->flags & PANE_EMPTY) {
 		xasprintf(&cp, "tmux(%lu).%%%u", (long)getpid(), new_wp->id);
 		utempter_add_record(new_wp->fd, cp);
@@ -494,7 +797,9 @@ complete:
 
 	new_wp->flags &= ~PANE_EXITED;
 
+#ifndef _WIN32
 	sigprocmask(SIG_SETMASK, &oldset, NULL);
+#endif
 	window_pane_set_event(new_wp);
 
 	environ_free(child);

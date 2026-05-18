@@ -17,7 +17,16 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #include <signal.h>
 #include <stdlib.h>
@@ -66,7 +75,7 @@ struct popup_data {
 	u_int			  psx;
 	u_int			  psy;
 
-	enum { OFF, MOVE, SIZE }  dragging;
+	enum { OFF, MOVE, DRAG_SIZE }  dragging;
 	u_int			  dx;
 	u_int			  dy;
 
@@ -80,6 +89,47 @@ struct popup_editor {
 	popup_finish_edit_cb	 cb;
 	void			*arg;
 };
+
+static FILE *
+popup_editor_open_temp(char **path_out, char **cwd_out)
+{
+#ifdef _WIN32
+	char	dir[MAX_PATH], path[MAX_PATH];
+	DWORD	n;
+	FILE	*f;
+
+	n = GetTempPathA(sizeof dir, dir);
+	if (n == 0 || n >= sizeof dir)
+		return (NULL);
+	if (GetTempFileNameA(dir, "tmux", 0, path) == 0)
+		return (NULL);
+	f = fopen(path, "wb");
+	if (f == NULL) {
+		DeleteFileA(path);
+		return (NULL);
+	}
+	*path_out = xstrdup(path);
+	*cwd_out = xstrdup(dir);
+	return (f);
+#else
+	char	path[] = _PATH_TMP "tmux.XXXXXXXX";
+	int	fd;
+	FILE	*f;
+
+	fd = mkstemp(path);
+	if (fd == -1)
+		return (NULL);
+	f = fdopen(fd, "wb");
+	if (f == NULL) {
+		close(fd);
+		unlink(path);
+		return (NULL);
+	}
+	*path_out = xstrdup(path);
+	*cwd_out = xstrdup(_PATH_TMP);
+	return (f);
+#endif
+}
 
 static const struct menu_item popup_menu_items[] = {
 	{ "Close", 'q', NULL },
@@ -430,6 +480,10 @@ popup_make_pane(struct popup_data *pd, enum layout_type type)
 	layout_assign_pane(lc, new_wp, 0);
 
 	if (pd->job != NULL) {
+#ifdef _WIN32
+		if (job_transfer_win32(pd->job, new_wp, &new_wp->pid,
+		    new_wp->tty, sizeof new_wp->tty) != 0)
+#endif
 		new_wp->fd = job_transfer(pd->job, &new_wp->pid, new_wp->tty,
 		    sizeof new_wp->tty);
 		pd->job = NULL;
@@ -442,8 +496,13 @@ popup_make_pane(struct popup_data *pd, enum layout_type type)
 	screen_init(&pd->s, 1, 1, 0);
 
 	shell = options_get_string(s->options, "default-shell");
-	if (!checkshell(shell))
+	if (!checkshell(shell)) {
+#ifdef _WIN32
+		shell = get_default_shell();
+#else
 		shell = _PATH_BSHELL;
+#endif
+	}
 	new_wp->shell = xstrdup(shell);
 
 	window_pane_set_event(new_wp);
@@ -527,7 +586,7 @@ popup_handle_drag(struct client *c, struct popup_data *pd,
 		pd->ppx = px;
 		pd->ppy = py;
 		server_redraw_client(c);
-	} else if (pd->dragging == SIZE) {
+	} else if (pd->dragging == DRAG_SIZE) {
 		if (pd->border_lines == BOX_LINES_NONE) {
 			if (m->x < pd->px + 1)
 				return;
@@ -613,7 +672,7 @@ popup_key_cb(struct client *c, void *data, struct key_event *event)
 			if (MOUSE_BUTTONS(m->lb) == MOUSE_BUTTON_1)
 				pd->dragging = MOVE;
 			else if (MOUSE_BUTTONS(m->lb) == MOUSE_BUTTON_3)
-				pd->dragging = SIZE;
+				pd->dragging = DRAG_SIZE;
 			pd->dx = m->lx - pd->px;
 			pd->dy = m->ly - pd->py;
 			goto out;
@@ -913,7 +972,7 @@ popup_editor_close_cb(int status, void *arg)
 		return;
 	}
 
-	f = fopen(pe->path, "r");
+	f = fopen(pe->path, "rb");
 	if (f != NULL) {
 		fseeko(f, 0, SEEK_END);
 		len = ftello(f);
@@ -938,10 +997,8 @@ popup_editor(struct client *c, const char *buf, size_t len,
     popup_finish_edit_cb cb, void *arg)
 {
 	struct popup_editor	*pe;
-	int			 fd;
 	FILE			*f;
-	char			*cmd;
-	char			 path[] = _PATH_TMP "tmux.XXXXXXXX";
+	char			*cmd, *path = NULL, *cwd = NULL;
 	const char		*editor;
 	u_int			 px, py, sx, sy;
 
@@ -949,20 +1006,20 @@ popup_editor(struct client *c, const char *buf, size_t len,
 	if (*editor == '\0')
 		return (-1);
 
-	fd = mkstemp(path);
-	if (fd == -1)
-		return (-1);
-	f = fdopen(fd, "w");
+	f = popup_editor_open_temp(&path, &cwd);
 	if (f == NULL)
 		return (-1);
-	if (fwrite(buf, len, 1, f) != 1) {
+	if (len != 0 && fwrite(buf, len, 1, f) != 1) {
 		fclose(f);
+		unlink(path);
+		free(path);
+		free(cwd);
 		return (-1);
 	}
 	fclose(f);
 
 	pe = xcalloc(1, sizeof *pe);
-	pe->path = xstrdup(path);
+	pe->path = path;
 	pe->cb = cb;
 	pe->arg = arg;
 
@@ -971,14 +1028,16 @@ popup_editor(struct client *c, const char *buf, size_t len,
 	px = (c->tty.sx / 2) - (sx / 2);
 	py = (c->tty.sy / 2) - (sy / 2);
 
-	xasprintf(&cmd, "%s %s", editor, path);
+	xasprintf(&cmd, "%s \"%s\"", editor, pe->path);
 	if (popup_display(POPUP_INTERNAL|POPUP_CLOSEEXIT, BOX_LINES_DEFAULT,
-	    NULL, px, py, sx, sy, NULL, cmd, 0, NULL, _PATH_TMP, NULL, c, NULL,
+	    NULL, px, py, sx, sy, NULL, cmd, 0, NULL, cwd, NULL, c, NULL,
 	    NULL, NULL, popup_editor_close_cb, pe) != 0) {
 		popup_editor_free(pe);
 		free(cmd);
+		free(cwd);
 		return (-1);
 	}
 	free(cmd);
+	free(cwd);
 	return (0);
 }

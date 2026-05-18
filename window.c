@@ -17,12 +17,16 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
+#endif
 
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <fnmatch.h>
+#endif
 #include <regex.h>
 #include <signal.h>
 #include <stdint.h>
@@ -32,6 +36,12 @@
 #include <unistd.h>
 
 #include "tmux.h"
+
+#ifdef _WIN32
+#include "compat/win32-process.h"
+#include "compat/win32-pty.h"
+#include "compat/win32-socketpair.h"
+#endif
 
 /*
  * Each window is attached to a number of panes, each of which is a pty. This
@@ -72,6 +82,30 @@ static struct window_pane *window_pane_create(struct window *, u_int, u_int,
 static void	window_pane_destroy(struct window_pane *);
 static void	window_pane_full_size_offset(struct window_pane *wp,
 		    u_int *xoff, u_int *yoff, u_int *sx, u_int *sy);
+
+#ifdef _WIN32
+static int
+window_win32_status(unsigned long exit_code)
+{
+	return ((exit_code & 0xff) << 8);
+}
+
+static int
+window_pane_input_ready(struct window_pane *wp)
+{
+	return (wp->win32_pty != NULL ?
+	    wp->win32_socket != (uintptr_t)-1 : wp->fd != -1);
+}
+
+static void	window_pane_win32_flush(struct window_pane *);
+static void	window_pane_win32_poll_cb(evutil_socket_t, short, void *);
+#else
+static int
+window_pane_input_ready(struct window_pane *wp)
+{
+	return (wp->fd != -1);
+}
+#endif
 
 RB_GENERATE(windows, window, entry, window_cmp);
 RB_GENERATE(winlinks, winlink, entry, winlink_cmp);
@@ -372,12 +406,26 @@ window_destroy(struct window *w)
 int
 window_pane_destroy_ready(struct window_pane *wp)
 {
+#ifndef _WIN32
 	int	n;
+#endif
+#ifdef _WIN32
+	unsigned long pending;
+#endif
 
 	if (wp->pipe_fd != -1 && EVBUFFER_LENGTH(wp->pipe_event->output) != 0)
 		return (0);
+#ifdef _WIN32
+	if (wp->win32_pty != NULL) {
+		if (win32_socket_pending(wp->win32_socket, &pending) == 0 &&
+		    pending > 0)
+			return (0);
+	}
+#endif
+#ifndef _WIN32
 	if (ioctl(wp->fd, FIONREAD, &n) != -1 && n > 0)
 		return (0);
+#endif
 
 	if (~wp->flags & PANE_EXITED)
 		return (0);
@@ -436,9 +484,25 @@ window_resize(struct window *w, u_int sx, u_int sy, int xpixel, int ypixel)
 void
 window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 {
+#ifndef _WIN32
 	struct window	*w = wp->window;
 	struct winsize	 ws;
+#endif
 
+#ifdef _WIN32
+	if (wp->win32_pty != NULL) {
+		log_debug("%s: %%%u resize to %u,%u", __func__, wp->id,
+		    sx, sy);
+		if (win32_pty_resize((struct win32_pty *)wp->win32_pty,
+		    sx, sy) != 0)
+			fatal("win32_pty_resize failed");
+		return;
+	}
+#endif
+
+#ifdef _WIN32
+	return;
+#else
 	if (wp->fd == -1)
 		return;
 
@@ -460,6 +524,7 @@ window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 		if (errno != EINVAL && errno != ENXIO)
 #endif
 		fatal("ioctl failed");
+#endif
 }
 
 int
@@ -973,6 +1038,9 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 	RB_INSERT(window_pane_tree, &all_window_panes, wp);
 
 	wp->fd = -1;
+#ifdef _WIN32
+	wp->win32_socket = (uintptr_t)-1;
+#endif
 
 	TAILQ_INIT(&wp->modes);
 
@@ -982,6 +1050,9 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 	wp->sy = sy;
 
 	wp->pipe_fd = -1;
+#ifdef _WIN32
+	wp->win32_pipe_socket = (uintptr_t)-1;
+#endif
 
 	wp->control_bg = -1;
 	wp->control_fg = -1;
@@ -1022,6 +1093,22 @@ window_pane_destroy(struct window_pane *wp)
 		bufferevent_free(wp->event);
 		close(wp->fd);
 	}
+#ifdef _WIN32
+	if (wp->win32_pty != NULL) {
+		if (event_initialized(&wp->win32_pane_poll_event))
+			event_del(&wp->win32_pane_poll_event);
+		if (~wp->flags & PANE_EXITED)
+			win32_pty_terminate((struct win32_pty *)wp->win32_pty,
+			    1);
+		if (wp->event != NULL)
+			bufferevent_free(wp->event);
+		win32_socket_close(wp->win32_socket);
+		win32_pty_close((struct win32_pty *)wp->win32_pty);
+		free(wp->win32_pty);
+		wp->win32_pty = NULL;
+		wp->win32_socket = (uintptr_t)-1;
+	}
+#endif
 	if (wp->ictx != NULL)
 		input_free(wp->ictx);
 
@@ -1031,7 +1118,16 @@ window_pane_destroy(struct window_pane *wp)
 
 	if (wp->pipe_fd != -1) {
 		bufferevent_free(wp->pipe_event);
+#ifdef _WIN32
+		win32_socket_close(wp->win32_pipe_socket);
+		if (wp->win32_pipe_process != NULL) {
+			win32_process_close((struct win32_process *)
+			    wp->win32_pipe_process);
+			free(wp->win32_pipe_process);
+		}
+#else
 		close(wp->pipe_fd);
+#endif
 	}
 
 	if (event_initialized(&wp->resize_timer))
@@ -1082,31 +1178,134 @@ window_pane_read_callback(__unused struct bufferevent *bufev, void *data)
 	bufferevent_disable(wp->event, EV_READ);
 }
 
+#ifdef _WIN32
+static void
+window_pane_win32_set_exited(struct window_pane *wp,
+    unsigned long exit_code)
+{
+	wp->status = window_win32_status(exit_code);
+	wp->flags |= PANE_STATUSREADY|PANE_EXITED;
+}
+#endif
+
 static void
 window_pane_error_callback(__unused struct bufferevent *bufev,
     __unused short what, void *data)
 {
 	struct window_pane *wp = data;
+#ifdef _WIN32
+	unsigned long	  exit_code;
+#endif
 
 	log_debug("%%%u error", wp->id);
+#ifdef _WIN32
+	if (wp->win32_pty != NULL &&
+	    win32_pty_wait((struct win32_pty *)wp->win32_pty, 0,
+	    &exit_code) == 1)
+		window_pane_win32_set_exited(wp, exit_code);
+#endif
 	wp->flags |= PANE_EXITED;
 
 	if (window_pane_destroy_ready(wp))
 		server_destroy_pane(wp, 1);
 }
 
+#ifdef _WIN32
+static void
+window_pane_win32_flush(struct window_pane *wp)
+{
+	struct evbuffer		*evb;
+	evutil_socket_t		fd;
+	int			n;
+
+	if (wp->event == NULL || wp->win32_pty == NULL ||
+	    wp->win32_socket == (uintptr_t)-1)
+		return;
+	evb = wp->event->output;
+	if (EVBUFFER_LENGTH(evb) == 0)
+		return;
+
+	fd = (evutil_socket_t)wp->win32_socket;
+	evbuffer_unfreeze(evb, 1);
+	for (;;) {
+		if (EVBUFFER_LENGTH(evb) == 0)
+			break;
+		n = evbuffer_write_atmost(evb, fd, -1);
+		if (n > 0)
+			continue;
+		break;
+	}
+	evbuffer_freeze(evb, 1);
+}
+
+static void
+window_pane_win32_poll_cb(__unused evutil_socket_t fd, __unused short events, void *data)
+{
+	struct window_pane	*wp = data;
+	struct timeval		 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	unsigned long		 exit_code, pending;
+	short			 active = 0;
+
+	if (wp->event == NULL || wp->win32_pty == NULL ||
+	    wp->win32_socket == (uintptr_t)-1)
+		return;
+
+	evtimer_add(&wp->win32_pane_poll_event, &tv);
+	if ((wp->event->enabled & EV_READ) &&
+	    win32_socket_pending(wp->win32_socket, &pending) == 0 &&
+	    pending != 0)
+		active |= EV_READ;
+	if ((wp->event->enabled & EV_WRITE) &&
+	    EVBUFFER_LENGTH(wp->event->output) != 0)
+		window_pane_win32_flush(wp);
+
+	if (active & EV_READ) {
+		event_active(&wp->event->ev_read, EV_READ, 1);
+		return;
+	}
+	if (wp->flags & PANE_EXITED) {
+		if (window_pane_destroy_ready(wp))
+			server_destroy_pane(wp, 1);
+		return;
+	}
+	if (win32_pty_wait((struct win32_pty *)wp->win32_pty, 0,
+	    &exit_code) == 1)
+		window_pane_win32_set_exited(wp, exit_code);
+}
+#endif
+
 void
 window_pane_set_event(struct window_pane *wp)
 {
+#ifdef _WIN32
+	struct timeval	tv = { .tv_sec = 0, .tv_usec = 10000 };
+
+	if (wp->win32_pty != NULL) {
+		win32_socket_set_blocking(wp->win32_socket, 0);
+		wp->event = bufferevent_new((evutil_socket_t)wp->win32_socket,
+		    window_pane_read_callback, NULL, window_pane_error_callback,
+		    wp);
+	} else {
+#endif
 	setblocking(wp->fd, 0);
 
 	wp->event = bufferevent_new(wp->fd, window_pane_read_callback,
 	    NULL, window_pane_error_callback, wp);
+#ifdef _WIN32
+	}
+#endif
 	if (wp->event == NULL)
 		fatalx("out of memory");
 	wp->ictx = input_init(wp, wp->event, &wp->palette, NULL);
 
 	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
+#ifdef _WIN32
+	if (wp->win32_pty != NULL) {
+		evtimer_set(&wp->win32_pane_poll_event,
+		    window_pane_win32_poll_cb, wp);
+		event_add(&wp->win32_pane_poll_event, &tv);
+	}
+#endif
 }
 
 void
@@ -1226,12 +1425,15 @@ window_pane_copy_paste(struct window_pane *wp, char *buf, size_t len)
 	TAILQ_FOREACH(loop, &wp->window->panes, entry) {
 		if (loop != wp &&
 		    TAILQ_EMPTY(&loop->modes) &&
-		    loop->fd != -1 &&
+		    window_pane_input_ready(loop) &&
 		    (~loop->flags & PANE_INPUTOFF) &&
 		    window_pane_visible(loop) &&
 		    options_get_number(loop->options, "synchronize-panes")) {
 			log_debug("%s: %.*s", __func__, (int)len, buf);
 			bufferevent_write(loop->event, buf, len);
+#ifdef _WIN32
+			window_pane_win32_flush(loop);
+#endif
 		}
 	}
 }
@@ -1244,11 +1446,15 @@ window_pane_copy_key(struct window_pane *wp, key_code key)
 	TAILQ_FOREACH(loop, &wp->window->panes, entry) {
 		if (loop != wp &&
 		    TAILQ_EMPTY(&loop->modes) &&
-		    loop->fd != -1 &&
+		    window_pane_input_ready(loop) &&
 		    (~loop->flags & PANE_INPUTOFF) &&
 		    window_pane_visible(loop) &&
-		    options_get_number(loop->options, "synchronize-panes"))
+		    options_get_number(loop->options, "synchronize-panes")) {
 			input_key_pane(loop, key, NULL);
+#ifdef _WIN32
+			window_pane_win32_flush(loop);
+#endif
+		}
 	}
 }
 
@@ -1258,6 +1464,12 @@ window_pane_paste(struct window_pane *wp, key_code key, char *buf, size_t len)
 	if (!TAILQ_EMPTY(&wp->modes))
 		return;
 
+#ifdef _WIN32
+	if (wp->win32_pty != NULL) {
+		if (!window_pane_input_ready(wp) || wp->flags & PANE_INPUTOFF)
+			return;
+	} else
+#endif
 	if (wp->fd == -1 || wp->flags & PANE_INPUTOFF)
 		return;
 
@@ -1266,6 +1478,9 @@ window_pane_paste(struct window_pane *wp, key_code key, char *buf, size_t len)
 
 	log_debug("%s: %.*s", __func__, (int)len, buf);
 	bufferevent_write(wp->event, buf, len);
+#ifdef _WIN32
+	window_pane_win32_flush(wp);
+#endif
 
 	if (options_get_number(wp->options, "synchronize-panes"))
 		window_pane_copy_paste(wp, buf, len);
@@ -1289,11 +1504,26 @@ window_pane_key(struct window_pane *wp, struct client *c, struct session *s,
 		return (0);
 	}
 
+#ifdef _WIN32
+	if (wp->win32_pty != NULL) {
+		if (!window_pane_input_ready(wp) || wp->flags & PANE_INPUTOFF)
+			return (0);
+		if ((key & KEYC_MASK_KEY) == KEYC_BREAK) {
+			if (key & KEYC_CTRL)
+				win32_pty_send_ctrl_break(
+				    (struct win32_pty *)wp->win32_pty);
+			return (0);
+		}
+	} else
+#endif
 	if (wp->fd == -1 || wp->flags & PANE_INPUTOFF)
 		return (0);
 
 	if (input_key_pane(wp, key, m) != 0)
 		return (-1);
+#ifdef _WIN32
+	window_pane_win32_flush(wp);
+#endif
 
 	if (KEYC_IS_MOUSE(key))
 		return (0);
@@ -1313,6 +1543,10 @@ window_pane_visible(struct window_pane *wp)
 int
 window_pane_exited(struct window_pane *wp)
 {
+#ifdef _WIN32
+	if (wp->win32_pty != NULL)
+		return ((wp->flags & PANE_EXITED) != 0);
+#endif
 	return (wp->fd == -1 || (wp->flags & PANE_EXITED));
 }
 

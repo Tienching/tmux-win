@@ -18,15 +18,23 @@
 
 #include <sys/types.h>
 
+#ifndef _WIN32
 #include <netinet/in.h>
+#endif
 
 #include <ctype.h>
+#ifndef _WIN32
 #include <resolv.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "tmux.h"
+
+#ifdef _WIN32
+#include "compat/win32-clipboard.h"
+#endif
 
 /*
  * Based on the description by Paul Williams at:
@@ -149,7 +157,7 @@ struct input_ctx {
 
 /* Helper functions. */
 struct input_transition;
-static void 	input_request_timer_callback(int, short, void *);
+static void 	input_request_timer_callback(evutil_socket_t, short, void *);
 static void	input_start_request_timer(struct input_ctx *);
 static struct input_request *input_make_request(struct input_ctx *,
 		    enum input_request_type);
@@ -795,7 +803,7 @@ input_stop_utf8(struct input_ctx *ictx)
  * long, so reset to ground.
  */
 static void
-input_ground_timer_callback(__unused int fd, __unused short events, void *arg)
+input_ground_timer_callback(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct input_ctx	*ictx = arg;
 
@@ -3151,6 +3159,9 @@ input_osc_52_reply(struct input_ctx *ictx, char clip)
 	int			 state;
 	const char		*buf;
 	size_t			 len;
+#ifdef _WIN32
+	char			*win32buf, *copy;
+#endif
 
 	state = options_get_number(global_options, "get-clipboard");
 	if (state == 0)
@@ -3165,6 +3176,21 @@ input_osc_52_reply(struct input_ctx *ictx, char clip)
 			input_reply_clipboard(ev, buf, len, "\033\\", clip);
 		return;
 	}
+#ifdef _WIN32
+	if (win32_clipboard_get_text(&win32buf, &len) == 0) {
+		if (state == 3 && len != 0) {
+			copy = xmalloc(len);
+			memcpy(copy, win32buf, len);
+			paste_add(NULL, copy, len);
+		}
+		if (ictx->input_end == INPUT_END_BEL)
+			input_reply_clipboard(ev, win32buf, len, "\007", clip);
+		else
+			input_reply_clipboard(ev, win32buf, len, "\033\\", clip);
+		free(win32buf);
+		return;
+	}
+#endif
 	input_add_request(ictx, INPUT_REQUEST_CLIPBOARD, ictx->input_end);
 }
 
@@ -3324,7 +3350,7 @@ input_set_buffer_size(size_t buffer_size)
 
 /* Request timer. Remove any requests that are too old. */
 static void
-input_request_timer_callback(__unused int fd, __unused short events, void *arg)
+input_request_timer_callback(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct input_ctx	*ictx = arg;
 	struct input_request	*ir, *ir1;

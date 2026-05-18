@@ -19,15 +19,34 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/socket.h>
+#endif
 
 #include <ctype.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include "tmux.h"
+
+#ifdef _WIN32
+static const char *
+server_acl_win32_current_name(void)
+{
+	static char	name[256];
+	DWORD		size = sizeof name;
+
+	if (GetUserNameA(name, &size))
+		return (name);
+	return ("current-user");
+}
+#endif
 
 struct server_acl_user {
 	uid_t				uid;
@@ -55,9 +74,13 @@ server_acl_init(void)
 {
 	RB_INIT(&server_acl_entries);
 
+#ifdef _WIN32
+	server_acl_user_allow(TMUX_WIN32_OWNER_UID);
+#else
 	if (getuid() != 0)
 		server_acl_user_allow(0);
 	server_acl_user_allow(getuid());
+#endif
 }
 
 /* Find user entry. */
@@ -74,16 +97,25 @@ void
 server_acl_display(struct cmdq_item *item)
 {
 	struct server_acl_user	*loop;
+#ifndef _WIN32
 	struct passwd		*pw;
+#endif
 	const char		*name;
 
 	RB_FOREACH(loop, server_acl_entries, &server_acl_entries) {
 		if (loop->uid == 0)
 			continue;
+#ifdef _WIN32
+		if (loop->uid == TMUX_WIN32_OWNER_UID)
+			name = server_acl_win32_current_name();
+		else
+			name = "unknown";
+#else
 		if ((pw = getpwuid(loop->uid)) != NULL)
 			name = pw->pw_name;
 		else
 			name = "unknown";
+#endif
 		if (loop->flags == SERVER_ACL_READONLY)
 			cmdq_print(item, "%s (R)", name);
 		else

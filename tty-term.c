@@ -23,10 +23,14 @@
 #elif defined(HAVE_NCURSES_H)
 #include <ncurses.h>
 #endif
+#ifndef _WIN32
 #include <fnmatch.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <term.h>
+#endif
 
 #include "tmux.h"
 
@@ -290,6 +294,686 @@ static const struct tty_term_code_entry tty_term_codes[] = {
 	[TTYC_VPA] = { TTYCODE_STRING, "vpa" },
 	[TTYC_XT] = { TTYCODE_FLAG, "XT" }
 };
+
+#ifdef _WIN32
+static const struct {
+	const char	*name;
+	const char	*value;
+} tty_term_win32_caps[] = {
+	{ "am", "1" },
+	{ "AX", "1" },
+	{ "bce", "1" },
+	{ "colors", "256" },
+	{ "RGB", "1" },
+	{ "Tc", "1" },
+	{ "XT", "1" },
+	{ "bel", "\007" },
+	{ "blink", "\033[5m" },
+	{ "bold", "\033[1m" },
+	{ "civis", "\033[?25l" },
+	{ "clear", "\033[H\033[J" },
+	{ "cnorm", "\033[?25h" },
+	{ "Cr", "\r" },
+	{ "csr", "\033[%d;%dr" },
+	{ "cub1", "\033[D" },
+	{ "cub", "\033[%dD" },
+	{ "cud1", "\033[B" },
+	{ "cud", "\033[%dB" },
+	{ "cuf1", "\033[C" },
+	{ "cuf", "\033[%dC" },
+	{ "cup", "\033[%d;%dH" },
+	{ "cuu1", "\033[A" },
+	{ "cuu", "\033[%dA" },
+	{ "cvvis", "\033[?25h" },
+	{ "dch1", "\033[P" },
+	{ "dch", "\033[%dP" },
+	{ "dim", "\033[2m" },
+	{ "dl1", "\033[M" },
+	{ "dl", "\033[%dM" },
+	{ "ech", "\033[%dX" },
+	{ "ed", "\033[J" },
+	{ "el1", "\033[1K" },
+	{ "el", "\033[K" },
+	{ "home", "\033[H" },
+	{ "hpa", "\033[%dG" },
+	{ "ich1", "\033[@" },
+	{ "ich", "\033[%d@" },
+	{ "il1", "\033[L" },
+	{ "il", "\033[%dL" },
+	{ "indn", "\033[%dS" },
+	{ "kmous", "\033[M" },
+	{ "Ms", "\033]52;%s;%s\007" },
+	{ "op", "\033[39;49m" },
+	{ "rev", "\033[7m" },
+	{ "rin", "\033[%dT" },
+	{ "ri", "\033M" },
+	{ "rmcup", "\033[?1049l" },
+	{ "rmkx", "\033[?1l\033>" },
+	{ "setab", "\033[48;5;%dm" },
+	{ "setaf", "\033[38;5;%dm" },
+	{ "setrgbb", "\033[48;2;%d;%d;%dm" },
+	{ "setrgbf", "\033[38;2;%d;%d;%dm" },
+	{ "sgr0", "\033[0m" },
+	{ "sitm", "\033[3m" },
+	{ "smcup", "\033[?1049h" },
+	{ "smkx", "\033[?1h\033=" },
+	{ "smso", "\033[7m" },
+	{ "smul", "\033[4m" },
+	{ "smxx", "\033[9m" },
+	{ "vpa", "\033[%dd" },
+	{ "kcuu1", "\033[A" },
+	{ "kcud1", "\033[B" },
+	{ "kcub1", "\033[D" },
+	{ "kcuf1", "\033[C" },
+	{ "khome", "\033[H" },
+	{ "kend", "\033[F" },
+	{ "kich1", "\033[2~" },
+	{ "kdch1", "\033[3~" },
+	{ "knp", "\033[6~" },
+	{ "kpp", "\033[5~" },
+	{ "kcbt", "\033[Z" },
+	{ "kf1", "\033OP" },
+	{ "kf2", "\033OQ" },
+	{ "kf3", "\033OR" },
+	{ "kf4", "\033OS" },
+	{ "kf5", "\033[15~" },
+	{ "kf6", "\033[17~" },
+	{ "kf7", "\033[18~" },
+	{ "kf8", "\033[19~" },
+	{ "kf9", "\033[20~" },
+	{ "kf10", "\033[21~" },
+	{ "kf11", "\033[23~" },
+	{ "kf12", "\033[24~" }
+};
+
+static void
+tty_term_win32_add_cap(char ***caps, u_int *ncaps, const char *name,
+    const char *value)
+{
+	*caps = xreallocarray(*caps, (*ncaps) + 1, sizeof **caps);
+	xasprintf(&(*caps)[*ncaps], "%s=%s", name, value);
+	(*ncaps)++;
+}
+
+static int
+tty_term_win32_format_ok(const char *s)
+{
+	for (; *s != '\0'; s++) {
+		if (*s != '%')
+			continue;
+		s++;
+		if (*s == '\0')
+			return (0);
+		if (*s != '%' && *s != 'd' && *s != 's')
+			return (0);
+	}
+	return (1);
+}
+
+static int
+tty_term_win32_indexed(enum tty_code_code code)
+{
+	switch (code) {
+	case TTYC_CSR:
+	case TTYC_CUP:
+	case TTYC_HPA:
+	case TTYC_VPA:
+		return (1);
+	default:
+		return (0);
+	}
+}
+
+enum tty_term_win32_value_type {
+	TTY_TERM_WIN32_NUMBER,
+	TTY_TERM_WIN32_STRING
+};
+
+struct tty_term_win32_value {
+	enum tty_term_win32_value_type	 type;
+	long				 number;
+	const char			*string;
+};
+
+struct tty_term_win32_condition {
+	int	parent_active;
+	int	condition_true;
+};
+
+static char	*tty_term_win32_out;
+static size_t	 tty_term_win32_outlen;
+static size_t	 tty_term_win32_outsize;
+
+static void
+tty_term_win32_out_reset(void)
+{
+	free(tty_term_win32_out);
+	tty_term_win32_out = NULL;
+	tty_term_win32_outlen = 0;
+	tty_term_win32_outsize = 0;
+}
+
+static void
+tty_term_win32_out_reserve(size_t size)
+{
+	size_t	newsize;
+
+	if (size <= tty_term_win32_outsize)
+		return;
+	newsize = (tty_term_win32_outsize == 0) ? 128 : tty_term_win32_outsize;
+	while (newsize < size)
+		newsize *= 2;
+	tty_term_win32_out = xrealloc(tty_term_win32_out, newsize);
+	tty_term_win32_outsize = newsize;
+}
+
+static void
+tty_term_win32_out_append(const char *s, size_t len)
+{
+	if (len == 0)
+		return;
+	tty_term_win32_out_reserve(tty_term_win32_outlen + len + 1);
+	memcpy(tty_term_win32_out + tty_term_win32_outlen, s, len);
+	tty_term_win32_outlen += len;
+	tty_term_win32_out[tty_term_win32_outlen] = '\0';
+}
+
+static void
+tty_term_win32_out_char(char ch)
+{
+	tty_term_win32_out_append(&ch, 1);
+}
+
+static void
+tty_term_win32_out_number(long n)
+{
+	char	tmp[64];
+
+	xsnprintf(tmp, sizeof tmp, "%ld", n);
+	tty_term_win32_out_append(tmp, strlen(tmp));
+}
+
+static const char *
+tty_term_win32_out_done(void)
+{
+	if (tty_term_win32_out == NULL) {
+		tty_term_win32_out_reserve(1);
+		tty_term_win32_out[0] = '\0';
+	}
+	return (tty_term_win32_out);
+}
+
+static struct tty_term_win32_value
+tty_term_win32_number(long n)
+{
+	struct tty_term_win32_value	value;
+
+	value.type = TTY_TERM_WIN32_NUMBER;
+	value.number = n;
+	value.string = NULL;
+	return (value);
+}
+
+static struct tty_term_win32_value
+tty_term_win32_string(const char *s)
+{
+	struct tty_term_win32_value	value;
+
+	value.type = TTY_TERM_WIN32_STRING;
+	value.number = 0;
+	value.string = s;
+	return (value);
+}
+
+static long
+tty_term_win32_value_number(const struct tty_term_win32_value *value)
+{
+	char	*end;
+
+	if (value->type == TTY_TERM_WIN32_NUMBER)
+		return (value->number);
+	if (value->string == NULL)
+		return (0);
+	return (strtol(value->string, &end, 10));
+}
+
+static size_t
+tty_term_win32_value_length(const struct tty_term_win32_value *value)
+{
+	char	tmp[64];
+
+	if (value->type == TTY_TERM_WIN32_STRING && value->string != NULL)
+		return (strlen(value->string));
+	xsnprintf(tmp, sizeof tmp, "%ld", tty_term_win32_value_number(value));
+	return (strlen(tmp));
+}
+
+static int
+tty_term_win32_push(struct tty_term_win32_value *stack, u_int *nstack,
+    struct tty_term_win32_value value)
+{
+	if (*nstack == 64)
+		return (0);
+	stack[(*nstack)++] = value;
+	return (1);
+}
+
+static int
+tty_term_win32_pop(struct tty_term_win32_value *stack, u_int *nstack,
+    struct tty_term_win32_value *value)
+{
+	if (*nstack == 0)
+		return (0);
+	*value = stack[--(*nstack)];
+	return (1);
+}
+
+static int
+tty_term_win32_variable_index(int ch)
+{
+	if (ch >= 'a' && ch <= 'z')
+		return (ch - 'a');
+	if (ch >= 'A' && ch <= 'Z')
+		return (26 + ch - 'A');
+	return (-1);
+}
+
+static int
+tty_term_win32_is_terminfo(const char *s)
+{
+	for (; *s != '\0'; s++) {
+		if (*s != '%')
+			continue;
+		s++;
+		if (*s == '\0')
+			return (0);
+		if (strchr("pPig{}'l?te;+-*/m&|^=<>AO!~", *s) != NULL)
+			return (1);
+	}
+	return (0);
+}
+
+static int
+tty_term_win32_out_format(const char **pp,
+    const struct tty_term_win32_value *value)
+{
+	const char	*p = *pp;
+	char		 fmt[32], *tmp = NULL;
+	size_t		 n = 0;
+	int		 spec;
+
+	fmt[n++] = '%';
+	if (*p == ':')
+		p++;
+	while ((*p >= '0' && *p <= '9') || *p == '-' || *p == '+' ||
+	    *p == ' ' || *p == '#' || *p == '.') {
+		if (n == (sizeof fmt) - 3)
+			return (0);
+		fmt[n++] = *p++;
+	}
+	spec = *p;
+	if (spec == '\0')
+		return (0);
+	if (spec != 'd' && spec != 'o' && spec != 'x' && spec != 'X' &&
+	    spec != 's' && spec != 'c')
+		return (0);
+	fmt[n++] = spec;
+	fmt[n] = '\0';
+
+	if (spec == 's') {
+		if (value->type == TTY_TERM_WIN32_STRING)
+			xasprintf(&tmp, fmt,
+			    value->string != NULL ? value->string : "");
+		else {
+			char	number[64];
+
+			xsnprintf(number, sizeof number, "%ld", value->number);
+			xasprintf(&tmp, fmt, number);
+		}
+	} else if (spec == 'c') {
+		tty_term_win32_out_char((char)tty_term_win32_value_number(value));
+		*pp = p;
+		return (1);
+	} else
+		xasprintf(&tmp, fmt, (int)tty_term_win32_value_number(value));
+	tty_term_win32_out_append(tmp, strlen(tmp));
+	free(tmp);
+
+	*pp = p;
+	return (1);
+}
+
+static const char *
+tty_term_win32_expand_printf(enum tty_code_code code, const char *s,
+    const struct tty_term_win32_value *args, u_int nargs)
+{
+	struct tty_term_win32_value	 values[3];
+	u_int				 i, next = 0;
+	long				 n;
+
+	if (!tty_term_win32_format_ok(s))
+		return ("");
+
+	for (i = 0; i < nargs && i < nitems(values); i++)
+		values[i] = args[i];
+	if (tty_term_win32_indexed(code)) {
+		for (i = 0; i < nargs && i < 2; i++) {
+			if (values[i].type == TTY_TERM_WIN32_NUMBER)
+				values[i].number++;
+		}
+	}
+
+	tty_term_win32_out_reset();
+	for (; *s != '\0'; s++) {
+		if (*s != '%') {
+			tty_term_win32_out_char(*s);
+			continue;
+		}
+		s++;
+		if (*s == '\0') {
+			tty_term_win32_out_reset();
+			return ("");
+		}
+		if (*s == '%') {
+			tty_term_win32_out_char('%');
+			continue;
+		}
+		if (next == nargs) {
+			tty_term_win32_out_reset();
+			return ("");
+		}
+		if (*s == 's') {
+			if (values[next].type == TTY_TERM_WIN32_STRING &&
+			    values[next].string != NULL)
+				tty_term_win32_out_append(values[next].string,
+				    strlen(values[next].string));
+			else
+				tty_term_win32_out_number(
+				    tty_term_win32_value_number(&values[next]));
+		} else if (*s == 'd') {
+			n = tty_term_win32_value_number(&values[next]);
+			tty_term_win32_out_number(n);
+		} else {
+			tty_term_win32_out_reset();
+			return ("");
+		}
+		next++;
+	}
+	return (tty_term_win32_out_done());
+}
+
+static const char *
+tty_term_win32_expand_terminfo(const char *s,
+    const struct tty_term_win32_value *args, u_int nargs)
+{
+	struct tty_term_win32_value	 params[9], stack[64], vars[52];
+	struct tty_term_win32_value	 lhs, rhs, value;
+	struct tty_term_win32_condition	 conds[16];
+	const char			*p = s, *cp;
+	u_int				 i, nstack = 0, nconds = 0;
+	long				 n, number;
+	int				 active = 1, idx, ch, neg;
+
+	for (i = 0; i < nitems(params); i++)
+		params[i] = tty_term_win32_number(0);
+	for (i = 0; i < nargs && i < nitems(params); i++)
+		params[i] = args[i];
+	for (i = 0; i < nitems(vars); i++)
+		vars[i] = tty_term_win32_number(0);
+
+	tty_term_win32_out_reset();
+	while (*p != '\0') {
+		if (*p != '%') {
+			if (active)
+				tty_term_win32_out_char(*p);
+			p++;
+			continue;
+		}
+		p++;
+		if (*p == '\0')
+			goto error;
+
+		switch (*p) {
+		case '%':
+			if (active)
+				tty_term_win32_out_char('%');
+			break;
+		case 'i':
+			if (active) {
+				for (i = 0; i < 2; i++) {
+					if (params[i].type == TTY_TERM_WIN32_NUMBER)
+						params[i].number++;
+				}
+			}
+			break;
+		case 'p':
+			p++;
+			if (*p < '1' || *p > '9')
+				goto error;
+			if (active && !tty_term_win32_push(stack, &nstack,
+			    params[*p - '1']))
+				goto error;
+			break;
+		case 'P':
+			p++;
+			idx = tty_term_win32_variable_index(*p);
+			if (idx == -1)
+				goto error;
+			if (active &&
+			    !tty_term_win32_pop(stack, &nstack, &vars[idx]))
+				goto error;
+			break;
+		case 'g':
+			p++;
+			idx = tty_term_win32_variable_index(*p);
+			if (idx == -1)
+				goto error;
+			if (active &&
+			    !tty_term_win32_push(stack, &nstack, vars[idx]))
+				goto error;
+			break;
+		case '\'':
+			p++;
+			if (*p == '\0')
+				goto error;
+			ch = (u_char)*p++;
+			if (*p != '\'')
+				goto error;
+			if (active &&
+			    !tty_term_win32_push(stack, &nstack,
+			    tty_term_win32_number(ch)))
+				goto error;
+			break;
+		case '{':
+			p++;
+			neg = 0;
+			if (*p == '-') {
+				neg = 1;
+				p++;
+			}
+			if (*p < '0' || *p > '9')
+				goto error;
+			number = 0;
+			do {
+				number = (number * 10) + (*p - '0');
+				p++;
+			} while (*p >= '0' && *p <= '9');
+			if (*p != '}')
+				goto error;
+			if (neg)
+				number = -number;
+			if (active &&
+			    !tty_term_win32_push(stack, &nstack,
+			    tty_term_win32_number(number)))
+				goto error;
+			break;
+		case 'l':
+			if (active) {
+				if (!tty_term_win32_pop(stack, &nstack, &value))
+					goto error;
+				if (!tty_term_win32_push(stack, &nstack,
+				    tty_term_win32_number(
+				    tty_term_win32_value_length(&value))))
+					goto error;
+			}
+			break;
+		case '+':
+		case '-':
+		case '*':
+		case '/':
+		case 'm':
+		case '&':
+		case '|':
+		case '^':
+		case '=':
+		case '<':
+		case '>':
+		case 'A':
+		case 'O':
+			if (active) {
+				if (!tty_term_win32_pop(stack, &nstack, &rhs) ||
+				    !tty_term_win32_pop(stack, &nstack, &lhs))
+					goto error;
+				n = tty_term_win32_value_number(&lhs);
+				number = tty_term_win32_value_number(&rhs);
+				switch (*p) {
+				case '+':
+					n += number;
+					break;
+				case '-':
+					n -= number;
+					break;
+				case '*':
+					n *= number;
+					break;
+				case '/':
+					n = (number == 0) ? 0 : n / number;
+					break;
+				case 'm':
+					n = (number == 0) ? 0 : n % number;
+					break;
+				case '&':
+					n &= number;
+					break;
+				case '|':
+					n |= number;
+					break;
+				case '^':
+					n ^= number;
+					break;
+				case '=':
+					n = (n == number);
+					break;
+				case '<':
+					n = (n < number);
+					break;
+				case '>':
+					n = (n > number);
+					break;
+				case 'A':
+					n = (n != 0 && number != 0);
+					break;
+				case 'O':
+					n = (n != 0 || number != 0);
+					break;
+				}
+				if (!tty_term_win32_push(stack, &nstack,
+				    tty_term_win32_number(n)))
+					goto error;
+			}
+			break;
+		case '!':
+		case '~':
+			if (active) {
+				if (!tty_term_win32_pop(stack, &nstack, &value))
+					goto error;
+				n = tty_term_win32_value_number(&value);
+				if (*p == '!')
+					n = (n == 0);
+				else
+					n = ~n;
+				if (!tty_term_win32_push(stack, &nstack,
+				    tty_term_win32_number(n)))
+					goto error;
+			}
+			break;
+		case '?':
+			if (nconds == nitems(conds))
+				goto error;
+			conds[nconds].parent_active = active;
+			conds[nconds].condition_true = 0;
+			nconds++;
+			break;
+		case 't':
+			if (nconds == 0)
+				goto error;
+			if (active) {
+				if (!tty_term_win32_pop(stack, &nstack, &value))
+					goto error;
+				conds[nconds - 1].condition_true =
+				    (tty_term_win32_value_number(&value) != 0);
+				active = conds[nconds - 1].parent_active &&
+				    conds[nconds - 1].condition_true;
+			} else {
+				active = 0;
+			}
+			break;
+		case 'e':
+			if (nconds == 0)
+				goto error;
+			active = conds[nconds - 1].parent_active &&
+			    !conds[nconds - 1].condition_true;
+			break;
+		case ';':
+			if (nconds == 0)
+				goto error;
+			active = conds[nconds - 1].parent_active;
+			nconds--;
+			break;
+		default:
+			if (active) {
+				cp = p;
+				if (!tty_term_win32_pop(stack, &nstack, &value))
+					goto error;
+				if (!tty_term_win32_out_format(&cp, &value))
+					goto error;
+				p = cp;
+			} else {
+				cp = p;
+				if (*cp == ':')
+					cp++;
+				while ((*cp >= '0' && *cp <= '9') ||
+				    *cp == '-' || *cp == '+' || *cp == ' ' ||
+				    *cp == '#' || *cp == '.')
+					cp++;
+				if (*cp == '\0')
+					goto error;
+				p = cp;
+			}
+			break;
+		}
+		p++;
+	}
+	if (nconds != 0)
+		goto error;
+	return (tty_term_win32_out_done());
+
+error:
+	tty_term_win32_out_reset();
+	return ("");
+}
+
+static const char *
+tty_term_win32_expand(enum tty_code_code code, const char *s,
+    const struct tty_term_win32_value *args, u_int nargs)
+{
+	if (tty_term_win32_is_terminfo(s))
+		return (tty_term_win32_expand_terminfo(s, args, nargs));
+	return (tty_term_win32_expand_printf(code, s, args, nargs));
+}
+#endif
+
+#ifndef TMUX_TERMINAL_FORMAT_PROBE
 
 u_int
 tty_term_ncodes(void)
@@ -601,9 +1285,11 @@ tty_term_create(struct tty *tty, char *name, char **caps, u_int ncaps,
 	}
 
 	/* Delete curses data. */
+#ifndef _WIN32
 #if !defined(NCURSES_VERSION_MAJOR) || NCURSES_VERSION_MAJOR > 5 || \
     (NCURSES_VERSION_MAJOR == 5 && NCURSES_VERSION_MINOR > 6)
 	del_curterm(cur_term);
+#endif
 #endif
 	/* Check for COLORTERM. */
 	envent = environ_find(tty->client->environ, "COLORTERM");
@@ -690,6 +1376,22 @@ int
 tty_term_read_list(const char *name, int fd, char ***caps, u_int *ncaps,
     char **cause)
 {
+#ifdef _WIN32
+	u_int	i;
+
+	(void)name;
+	(void)fd;
+	(void)cause;
+
+	*ncaps = 0;
+	*caps = NULL;
+	for (i = 0; i < nitems(tty_term_win32_caps); i++) {
+		tty_term_win32_add_cap(caps, ncaps,
+		    tty_term_win32_caps[i].name,
+		    tty_term_win32_caps[i].value);
+	}
+	return (0);
+#else
 	const struct tty_term_code_entry	*ent;
 	int					 error, n;
 	u_int					 i;
@@ -758,6 +1460,7 @@ tty_term_read_list(const char *name, int fd, char ***caps, u_int *ncaps,
 	del_curterm(cur_term);
 #endif
 	return (0);
+#endif
 }
 
 void
@@ -791,6 +1494,12 @@ tty_term_string_i(struct tty_term *term, enum tty_code_code code, int a)
 {
 	const char	*x = tty_term_string(term, code), *s;
 
+#ifdef _WIN32
+	struct tty_term_win32_value	args[1];
+
+	args[0] = tty_term_win32_number(a);
+	return (tty_term_win32_expand(code, x, args, nitems(args)));
+#else
 #if defined(HAVE_TIPARM_S)
 	s = tiparm_s(1, 0, x, a);
 #elif defined(HAVE_TIPARM)
@@ -803,6 +1512,7 @@ tty_term_string_i(struct tty_term *term, enum tty_code_code code, int a)
 		return ("");
 	}
 	return (s);
+#endif
 }
 
 const char *
@@ -810,6 +1520,13 @@ tty_term_string_ii(struct tty_term *term, enum tty_code_code code, int a, int b)
 {
 	const char	*x = tty_term_string(term, code), *s;
 
+#ifdef _WIN32
+	struct tty_term_win32_value	args[2];
+
+	args[0] = tty_term_win32_number(a);
+	args[1] = tty_term_win32_number(b);
+	return (tty_term_win32_expand(code, x, args, nitems(args)));
+#else
 #if defined(HAVE_TIPARM_S)
 	s = tiparm_s(2, 0, x, a, b);
 #elif defined(HAVE_TIPARM)
@@ -822,6 +1539,7 @@ tty_term_string_ii(struct tty_term *term, enum tty_code_code code, int a, int b)
 		return ("");
 	}
 	return (s);
+#endif
 }
 
 const char *
@@ -830,6 +1548,14 @@ tty_term_string_iii(struct tty_term *term, enum tty_code_code code, int a,
 {
 	const char	*x = tty_term_string(term, code), *s;
 
+#ifdef _WIN32
+	struct tty_term_win32_value	args[3];
+
+	args[0] = tty_term_win32_number(a);
+	args[1] = tty_term_win32_number(b);
+	args[2] = tty_term_win32_number(c);
+	return (tty_term_win32_expand(code, x, args, nitems(args)));
+#else
 #if defined(HAVE_TIPARM_S)
 	s = tiparm_s(3, 0, x, a, b, c);
 #elif defined(HAVE_TIPARM)
@@ -842,6 +1568,7 @@ tty_term_string_iii(struct tty_term *term, enum tty_code_code code, int a,
 		return ("");
 	}
 	return (s);
+#endif
 }
 
 const char *
@@ -849,6 +1576,12 @@ tty_term_string_s(struct tty_term *term, enum tty_code_code code, const char *a)
 {
 	const char	*x = tty_term_string(term, code), *s;
 
+#ifdef _WIN32
+	struct tty_term_win32_value	args[1];
+
+	args[0] = tty_term_win32_string(a);
+	return (tty_term_win32_expand(code, x, args, nitems(args)));
+#else
 #if defined(HAVE_TIPARM_S)
 	s = tiparm_s(1, 1, x, a);
 #elif defined(HAVE_TIPARM)
@@ -861,6 +1594,7 @@ tty_term_string_s(struct tty_term *term, enum tty_code_code code, const char *a)
 		return ("");
 	}
 	return (s);
+#endif
 }
 
 const char *
@@ -869,6 +1603,13 @@ tty_term_string_ss(struct tty_term *term, enum tty_code_code code,
 {
 	const char	*x = tty_term_string(term, code), *s;
 
+#ifdef _WIN32
+	struct tty_term_win32_value	args[2];
+
+	args[0] = tty_term_win32_string(a);
+	args[1] = tty_term_win32_string(b);
+	return (tty_term_win32_expand(code, x, args, nitems(args)));
+#else
 #if defined(HAVE_TIPARM_S)
 	s = tiparm_s(2, 3, x, a, b);
 #elif defined(HAVE_TIPARM)
@@ -881,6 +1622,7 @@ tty_term_string_ss(struct tty_term *term, enum tty_code_code code,
 		return ("");
 	}
 	return (s);
+#endif
 }
 
 int
@@ -934,3 +1676,5 @@ tty_term_describe(struct tty_term *term, enum tty_code_code code)
 	}
 	return (s);
 }
+
+#endif /* !TMUX_TERMINAL_FORMAT_PROBE */

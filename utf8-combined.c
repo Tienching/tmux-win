@@ -86,7 +86,7 @@ utf8_is_hangul_filler(const struct utf8_data *ud)
 int
 utf8_should_combine(const struct utf8_data *with, const struct utf8_data *add)
 {
-	wchar_t	w, a;
+	utf8_wchar	w, a;
 
 	if (utf8_towc(with, &w) != UTF8_DONE)
 		return (0);

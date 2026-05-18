@@ -26,6 +26,11 @@
 
 #include "tmux.h"
 
+#ifdef _WIN32
+#include "compat/win32-socketpair.h"
+#include "compat/win32-stdio.h"
+#endif
+
 /*
  * Block of data to output. Each client has one "all" queue of blocks and
  * another queue for each pane (in struct client_offset). %output blocks are
@@ -676,7 +681,7 @@ control_write_pending(struct client *c, struct control_pane *cp, size_t limit)
 	uint64_t		 age, t = get_timer();
 
 	wp = control_window_pane(c, cp->pane);
-	if (wp == NULL || wp->fd == -1) {
+	if (wp == NULL || window_pane_exited(wp)) {
 		TAILQ_FOREACH_SAFE(cb, &cp->blocks, entry, cb1) {
 			TAILQ_REMOVE(&cp->blocks, cb, entry);
 			control_free_block(cs, cb);
@@ -771,6 +776,28 @@ void
 control_start(struct client *c)
 {
 	struct control_state	*cs;
+#ifdef _WIN32
+	uintptr_t		 read_fd, write_fd;
+	int			 shared_event;
+
+	if (c->win32_stdio_bridge != NULL) {
+		read_fd = c->win32_fd;
+		write_fd = c->win32_out_fd;
+		shared_event = 0;
+		win32_socket_set_blocking(read_fd, 0);
+		win32_socket_set_blocking(write_fd, 0);
+	} else {
+		read_fd = (uintptr_t)c->fd;
+		write_fd = (uintptr_t)c->out_fd;
+		shared_event = !!(c->flags & CLIENT_CONTROLCONTROL);
+		if (c->flags & CLIENT_CONTROLCONTROL) {
+			close(c->out_fd);
+			c->out_fd = -1;
+		} else
+			setblocking(c->out_fd, 0);
+		setblocking(c->fd, 0);
+	}
+#else
 
 	if (c->flags & CLIENT_CONTROLCONTROL) {
 		close(c->out_fd);
@@ -778,6 +805,7 @@ control_start(struct client *c)
 	} else
 		setblocking(c->out_fd, 0);
 	setblocking(c->fd, 0);
+#endif
 
 	cs = c->control_state = xcalloc(1, sizeof *cs);
 	RB_INIT(&cs->panes);
@@ -785,11 +813,27 @@ control_start(struct client *c)
 	TAILQ_INIT(&cs->all_blocks);
 	RB_INIT(&cs->subs);
 
+#ifdef _WIN32
+	cs->read_event = bufferevent_new((evutil_socket_t)read_fd,
+	    control_read_callback, control_write_callback,
+	    control_error_callback, c);
+#else
 	cs->read_event = bufferevent_new(c->fd, control_read_callback,
 	    control_write_callback, control_error_callback, c);
+#endif
 	if (cs->read_event == NULL)
 		fatalx("out of memory");
 
+#ifdef _WIN32
+	if (shared_event)
+		cs->write_event = cs->read_event;
+	else {
+		cs->write_event = bufferevent_new((evutil_socket_t)write_fd,
+		    NULL, control_write_callback, control_error_callback, c);
+		if (cs->write_event == NULL)
+			fatalx("out of memory");
+	}
+#else
 	if (c->flags & CLIENT_CONTROLCONTROL)
 		cs->write_event = cs->read_event;
 	else {
@@ -798,9 +842,15 @@ control_start(struct client *c)
 		if (cs->write_event == NULL)
 			fatalx("out of memory");
 	}
+#endif
 	bufferevent_setwatermark(cs->write_event, EV_WRITE, CONTROL_BUFFER_LOW,
 	    0);
 
+#ifdef _WIN32
+	if (c->win32_stdio_bridge != NULL &&
+	    (c->flags & CLIENT_CONTROLCONTROL))
+		win32_stdio_bridge_prepare_terminal(c->win32_stdio_bridge);
+#endif
 	if (c->flags & CLIENT_CONTROLCONTROL) {
 		bufferevent_write(cs->write_event, "\033P1000p", 7);
 		bufferevent_enable(cs->write_event, EV_WRITE);
@@ -837,8 +887,19 @@ control_stop(struct client *c)
 	if (cs == NULL)
 		return;
 
+#ifdef _WIN32
+	if (c->win32_stdio_bridge != NULL &&
+	    (c->flags & CLIENT_CONTROLCONTROL))
+		win32_stdio_bridge_restore_terminal(c->win32_stdio_bridge);
+#endif
+#ifdef _WIN32
+	if ((~c->flags & CLIENT_CONTROLCONTROL) ||
+	    c->win32_stdio_bridge != NULL)
+		bufferevent_free(cs->write_event);
+#else
 	if (~c->flags & CLIENT_CONTROLCONTROL)
 		bufferevent_free(cs->write_event);
+#endif
 	bufferevent_free(cs->read_event);
 
 	RB_FOREACH_SAFE(csub, control_subs, &cs->subs, csub1)
@@ -888,7 +949,7 @@ control_check_subs_pane(struct client *c, struct control_sub *csub)
 	struct control_sub_pane	*csp, find;
 
 	wp = window_pane_find_by_id(csub->id);
-	if (wp == NULL || wp->fd == -1)
+	if (wp == NULL || window_pane_exited(wp))
 		return;
 	w = wp->window;
 
@@ -1039,7 +1100,7 @@ control_check_subs_all_windows_one(struct client *c, struct control_sub *csub,
 
 /* Check subscriptions timer. */
 static void
-control_check_subs_timer(__unused int fd, __unused short events, void *data)
+control_check_subs_timer(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct client		*c = data;
 	struct control_state	*cs = c->control_state;

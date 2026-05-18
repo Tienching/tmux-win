@@ -25,13 +25,13 @@
 
 #include "tmux.h"
 
-static void	 name_time_callback(int, short, void *);
+static void	 name_time_callback(evutil_socket_t, short, void *);
 static int	 name_time_expired(struct window *, struct timeval *);
 
 static char	*format_window_name(struct window *);
 
 static void
-name_time_callback(__unused int fd, __unused short events, void *arg)
+name_time_callback(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct window	*w = arg;
 
@@ -164,8 +164,17 @@ parse_window_name(const char *in)
 			*ptr-- = '\0';
 	}
 
+#ifdef _WIN32
+	if ((ptr = strrchr(name, '\\')) != NULL ||
+	    (ptr = strrchr(name, '/')) != NULL)
+		name = ptr + 1;
+	else if (isalpha((u_char)name[0]) && name[1] == ':' &&
+	    name[2] != '\0')
+		name += 2;
+#else
 	if (*name == '/')
 		name = basename(name);
+#endif
 	name = clean_name(name, "#");
 	free(copy);
 	if (name == NULL)

@@ -17,26 +17,40 @@
  */
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
 
 #include <netinet/in.h>
+#endif
 
+#ifndef _WIN32
 #include <curses.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <resolv.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
 #include "tmux.h"
 
+#ifdef _WIN32
+#include "compat/win32-clipboard.h"
+#include "compat/win32-socketpair.h"
+#include "compat/win32-stdio.h"
+#endif
+
 static int	tty_log_fd = -1;
 
-static void	tty_start_timer_callback(int, short, void *);
-static void	tty_clipboard_query_callback(int, short, void *);
+static void	tty_start_timer_callback(evutil_socket_t, short, void *);
+static void	tty_clipboard_query_callback(evutil_socket_t, short, void *);
 static void	tty_set_italics(struct tty *);
 static int	tty_try_colour(struct tty *, int, const char *);
 static void	tty_force_cursor_colour(struct tty *, int);
@@ -84,6 +98,20 @@ static void	tty_write_one(void (*)(struct tty *, const struct tty_ctx *),
 #define TTY_QUERY_TIMEOUT 5
 #define TTY_REQUEST_LIMIT 30
 
+#ifdef _WIN32
+static evutil_socket_t
+tty_client_read_fd(struct client *c)
+{
+	return ((evutil_socket_t)c->win32_fd);
+}
+
+static evutil_socket_t
+tty_client_write_fd(struct client *c)
+{
+	return ((evutil_socket_t)c->win32_out_fd);
+}
+#endif
+
 void
 tty_create_log(void)
 {
@@ -92,15 +120,22 @@ tty_create_log(void)
 	xsnprintf(name, sizeof name, "tmux-out-%ld.log", (long)getpid());
 
 	tty_log_fd = open(name, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+#ifndef _WIN32
 	if (tty_log_fd != -1 && fcntl(tty_log_fd, F_SETFD, FD_CLOEXEC) == -1)
 		fatal("fcntl failed");
+#endif
 }
 
 int
 tty_init(struct tty *tty, struct client *c)
 {
+#ifdef _WIN32
+	if (c->win32_stdio_bridge == NULL)
+		return (-1);
+#else
 	if (!isatty(c->fd))
 		return (-1);
+#endif
 
 	memset(tty, 0, sizeof *tty);
 	tty->client = c;
@@ -109,8 +144,10 @@ tty_init(struct tty *tty, struct client *c)
 	tty->ccolour = -1;
 	tty->fg = tty->bg = -1;
 
+#ifndef _WIN32
 	if (tcgetattr(c->fd, &tty->tio) != 0)
 		return (-1);
+#endif
 	return (0);
 }
 
@@ -118,9 +155,22 @@ void
 tty_resize(struct tty *tty)
 {
 	struct client	*c = tty->client;
+#ifndef _WIN32
 	struct winsize	 ws;
+#endif
 	u_int		 sx, sy, xpixel, ypixel;
 
+#ifdef _WIN32
+	if (win32_stdio_bridge_get_size(c->win32_stdio_bridge, &sx, &sy) == 0) {
+		xpixel = 0;
+		ypixel = 0;
+	} else {
+		sx = 80;
+		sy = 24;
+		xpixel = 0;
+		ypixel = 0;
+	}
+#else
 	if (ioctl(c->fd, TIOCGWINSZ, &ws) != -1) {
 		sx = ws.ws_col;
 		if (sx == 0) {
@@ -148,6 +198,7 @@ tty_resize(struct tty *tty)
 		xpixel = 0;
 		ypixel = 0;
 	}
+#endif
 	log_debug("%s: %s now %ux%u (%ux%u)", __func__, c->name, sx, sy,
 	    xpixel, ypixel);
 	tty_set_size(tty, sx, sy, xpixel, ypixel);
@@ -164,7 +215,7 @@ tty_set_size(struct tty *tty, u_int sx, u_int sy, u_int xpixel, u_int ypixel)
 }
 
 static void
-tty_read_callback(__unused int fd, __unused short events, void *data)
+tty_read_callback(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct tty	*tty = data;
 	struct client	*c = tty->client;
@@ -172,7 +223,11 @@ tty_read_callback(__unused int fd, __unused short events, void *data)
 	size_t		 size = EVBUFFER_LENGTH(tty->in);
 	int		 nread;
 
+#ifdef _WIN32
+	nread = evbuffer_read(tty->in, tty_client_read_fd(c), -1);
+#else
 	nread = evbuffer_read(tty->in, c->fd, -1);
+#endif
 	if (nread == 0 || nread == -1) {
 		if (nread == 0)
 			log_debug("%s: read closed", name);
@@ -189,7 +244,7 @@ tty_read_callback(__unused int fd, __unused short events, void *data)
 }
 
 static void
-tty_timer_callback(__unused int fd, __unused short events, void *data)
+tty_timer_callback(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct tty	*tty = data;
 	struct client	*c = tty->client;
@@ -239,14 +294,18 @@ tty_block_maybe(struct tty *tty)
 }
 
 static void
-tty_write_callback(__unused int fd, __unused short events, void *data)
+tty_write_callback(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct tty	*tty = data;
 	struct client	*c = tty->client;
 	size_t		 size = EVBUFFER_LENGTH(tty->out);
 	int		 nwrite;
 
+#ifdef _WIN32
+	nwrite = evbuffer_write(tty->out, tty_client_write_fd(c));
+#else
 	nwrite = evbuffer_write(tty->out, c->fd);
+#endif
 	if (nwrite == -1)
 		return;
 	log_debug("%s: wrote %d bytes (of %zu)", c->name, nwrite, size);
@@ -280,13 +339,23 @@ tty_open(struct tty *tty, char **cause)
 
 	tty->flags &= ~(TTY_NOCURSOR|TTY_FREEZE|TTY_BLOCK|TTY_TIMER);
 
-	event_set(&tty->event_in, c->fd, EV_PERSIST|EV_READ,
+#ifdef _WIN32
+	event_set(&tty->event_in, tty_client_read_fd(c), EV_PERSIST|EV_READ,
 	    tty_read_callback, tty);
+#else
+	event_set(&tty->event_in, c->fd, EV_PERSIST|EV_READ, tty_read_callback,
+	    tty);
+#endif
 	tty->in = evbuffer_new();
 	if (tty->in == NULL)
 		fatal("out of memory");
 
+#ifdef _WIN32
+	event_set(&tty->event_out, tty_client_write_fd(c), EV_WRITE,
+	    tty_write_callback, tty);
+#else
 	event_set(&tty->event_out, c->fd, EV_WRITE, tty_write_callback, tty);
+#endif
 	tty->out = evbuffer_new();
 	if (tty->out == NULL)
 		fatal("out of memory");
@@ -302,7 +371,7 @@ tty_open(struct tty *tty, char **cause)
 }
 
 static void
-tty_start_timer_callback(__unused int fd, __unused short events, void *data)
+tty_start_timer_callback(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct tty	*tty = data;
 	struct client	*c = tty->client;
@@ -331,11 +400,20 @@ void
 tty_start_tty(struct tty *tty)
 {
 	struct client	*c = tty->client;
+#ifndef _WIN32
 	struct termios	 tio;
+#endif
 
+#ifdef _WIN32
+	win32_stdio_bridge_prepare_terminal(c->win32_stdio_bridge);
+	win32_socket_set_blocking(c->win32_fd, 0);
+	win32_socket_set_blocking(c->win32_out_fd, 0);
+#else
 	setblocking(c->fd, 0);
+#endif
 	event_add(&tty->event_in, NULL);
 
+#ifndef _WIN32
 	memcpy(&tio, &tty->tio, sizeof tio);
 	tio.c_iflag &= ~(IXON|IXOFF|ICRNL|INLCR|IGNCR|IMAXBEL|ISTRIP);
 	tio.c_iflag |= IGNBRK;
@@ -346,6 +424,7 @@ tty_start_tty(struct tty *tty)
 	tio.c_cc[VTIME] = 0;
 	if (tcsetattr(c->fd, TCSANOW, &tio) == 0)
 		tcflush(c->fd, TCOFLUSH);
+#endif
 
 	tty_putcode(tty, TTYC_SMCUP);
 
@@ -434,7 +513,10 @@ void
 tty_stop_tty(struct tty *tty)
 {
 	struct client	*c = tty->client;
+#ifndef _WIN32
 	struct winsize	 ws;
+#endif
+	u_int		 rows;
 
 	if (!(tty->flags & TTY_STARTED))
 		return;
@@ -454,12 +536,19 @@ tty_stop_tty(struct tty *tty)
 	 * because the fd is invalid. Things like ssh -t can easily leave us
 	 * with a dead tty.
 	 */
+#ifdef _WIN32
+	rows = tty->sy;
+	if (rows == 0)
+		rows = 24;
+#else
 	if (ioctl(c->fd, TIOCGWINSZ, &ws) == -1)
 		return;
 	if (tcsetattr(c->fd, TCSANOW, &tty->tio) == -1)
 		return;
+	rows = ws.ws_row;
+#endif
 
-	tty_raw(tty, tty_term_string_ii(tty->term, TTYC_CSR, 0, ws.ws_row - 1));
+	tty_raw(tty, tty_term_string_ii(tty->term, TTYC_CSR, 0, rows - 1));
 	if (tty_acs_needed(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMACS));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_SGR0));
@@ -494,7 +583,13 @@ tty_stop_tty(struct tty *tty)
 	if (tty->term->flags & TERM_VT100LIKE)
 		tty_raw(tty, "\033[?2031l");
 
+#ifdef _WIN32
+	win32_socket_set_blocking(c->win32_fd, 1);
+	win32_socket_set_blocking(c->win32_out_fd, 1);
+	win32_stdio_bridge_restore_terminal(c->win32_stdio_bridge);
+#else
 	setblocking(c->fd, 1);
+#endif
 }
 
 void
@@ -557,9 +652,26 @@ tty_raw(struct tty *tty, const char *s)
 	struct client	*c = tty->client;
 	ssize_t		 n, slen;
 	u_int		 i;
+#ifdef _WIN32
+	int		 error;
+#endif
 
 	slen = strlen(s);
 	for (i = 0; i < 5; i++) {
+#ifdef _WIN32
+		n = send((SOCKET)c->win32_out_fd, s, (int)slen, 0);
+		if (n >= 0) {
+			s += n;
+			slen -= n;
+			if (slen == 0)
+				break;
+		} else {
+			error = WSAGetLastError();
+			if (error != WSAEWOULDBLOCK)
+				break;
+		}
+		Sleep(1);
+#else
 		n = write(c->fd, s, slen);
 		if (n >= 0) {
 			s += n;
@@ -569,6 +681,7 @@ tty_raw(struct tty *tty, const char *s)
 		} else if (n == -1 && errno != EAGAIN)
 			break;
 		usleep(100);
+#endif
 	}
 }
 
@@ -2096,6 +2209,10 @@ tty_set_selection(struct tty *tty, const char *clip, const char *buf,
 
 	if (~tty->flags & TTY_STARTED)
 		return;
+#ifdef _WIN32
+	if (win32_clipboard_set_text(buf, len) == 0)
+		return;
+#endif
 	if (!tty_term_has(tty->term, TTYC_MS))
 		return;
 
@@ -3035,7 +3152,7 @@ tty_default_attributes(struct tty *tty, const struct grid_cell *defaults,
 }
 
 static void
-tty_clipboard_query_callback(__unused int fd, __unused short events, void *data)
+tty_clipboard_query_callback(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct tty	*tty = data;
 
@@ -3046,7 +3163,17 @@ void
 tty_clipboard_query(struct tty *tty)
 {
 	struct timeval	 tv = { .tv_sec = TTY_QUERY_TIMEOUT };
+#ifdef _WIN32
+	char		*buf;
+	size_t		 len;
+#endif
 
+#ifdef _WIN32
+	if (win32_clipboard_get_text(&buf, &len) == 0) {
+		paste_add(NULL, buf, len);
+		return;
+	}
+#endif
 	if ((tty->flags & TTY_STARTED) && (~tty->flags & TTY_OSC52QUERY)) {
 		tty_putcode_ss(tty, TTYC_MS, "", "?");
 		tty->flags |= TTY_OSC52QUERY;
