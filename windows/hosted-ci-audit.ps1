@@ -21,6 +21,11 @@ if ([string]::IsNullOrWhiteSpace($Output)) {
 }
 $Output = [System.IO.Path]::GetFullPath($Output)
 
+function Get-Sha256([string]$Path) {
+	return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).
+	    Hash.ToLowerInvariant()
+}
+
 function Get-GitHubRepositoryFromRemote {
 	try {
 		$url = (& git remote get-url origin 2>$null).Trim()
@@ -124,6 +129,20 @@ if ($RunLimit -gt 100) {
 	$RunLimit = 100
 }
 $authenticated = Test-GitHubTokenPresent
+$localWorkflowPath = ""
+if (-not [string]::IsNullOrWhiteSpace($WorkflowPath)) {
+	$localWorkflowPath = $WorkflowPath.Replace("/",
+	    [string][System.IO.Path]::DirectorySeparatorChar)
+	if (-not [System.IO.Path]::IsPathRooted($localWorkflowPath)) {
+		$localWorkflowPath = Join-Path $Root $localWorkflowPath
+	}
+	$localWorkflowPath = [System.IO.Path]::GetFullPath($localWorkflowPath)
+}
+$localWorkflowExists = -not [string]::IsNullOrWhiteSpace($localWorkflowPath) -and
+    (Test-Path -LiteralPath $localWorkflowPath -PathType Leaf)
+$localWorkflowSha256 = $(if ($localWorkflowExists) {
+    Get-Sha256 $localWorkflowPath
+} else { "" })
 
 $status = "failed"
 $workflow = $null
@@ -142,6 +161,9 @@ try {
 	if ($workflow.Count -eq 0) {
 		$status = "missing_workflow"
 		$detail = "workflow not found by name '$WorkflowName' or path '$WorkflowPath'"
+		if ($localWorkflowExists) {
+			$detail += "; local workflow file exists but is not visible in repository '$Repository'"
+		}
 	} else {
 		$workflow = $workflow[0]
 		$runsUri = "https://api.github.com/repos/$Repository/actions/workflows/$($workflow.id)/runs?per_page=$RunLimit"
@@ -190,6 +212,9 @@ $summary = [pscustomobject]@{
 	Branch = $Branch
 	RunLimit = $RunLimit
 	Authenticated = $authenticated
+	LocalWorkflowPath = $localWorkflowPath
+	LocalWorkflowExists = $localWorkflowExists
+	LocalWorkflowSha256 = $localWorkflowSha256
 	Status = $status
 	Detail = $detail
 	Workflow = $(if ($null -ne $workflow -and $workflow.Count -ne 0) {
