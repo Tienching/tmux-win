@@ -193,7 +193,25 @@ $evidenceRows = [System.Collections.Generic.List[string]]::new()
 if ($null -ne $signing) {
 	$authenticode = $(if ($signing.PSObject.Properties.Name -contains
 	    "AuthenticodeStatus") { $signing.AuthenticodeStatus } else { "" })
-	$evidenceRows.Add("| Signing audit | $($signing.Status); Authenticode=$authenticode |")
+	$candidateDetail = ""
+	if ($signing.PSObject.Properties.Name -contains
+	    "CodeSigningCandidateCount") {
+		$candidateDetail +=
+		    "; code_signing_candidates=$($signing.CodeSigningCandidateCount)"
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "PublisherMatchingCandidateCount") {
+		$candidateDetail +=
+		    "; publisher_matching_candidates=$($signing.PublisherMatchingCandidateCount)"
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "UsablePublisherMatchingCandidateCount") {
+		$candidateDetail +=
+		    "; usable_publisher_matching_candidates=$($signing.UsablePublisherMatchingCandidateCount)"
+	}
+	$signingStatus = Format-TableValue (
+	    "$($signing.Status); Authenticode=$authenticode$candidateDetail")
+	$evidenceRows.Add("| Signing audit | $signingStatus |")
 }
 if ($null -ne $ipcBoundary) {
 	$failed = @($ipcBoundary.Checks | Where-Object { $_.Status -eq "failed" })
