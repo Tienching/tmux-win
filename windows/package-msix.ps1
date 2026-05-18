@@ -182,17 +182,28 @@ function Invoke-Native([string]$Tool, [string[]]$Arguments) {
 	return $output
 }
 
-function Get-SigningCertificateSubject {
+function Get-CertificateEnhancedKeyUsageOids(
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
+	$oids = [System.Collections.Generic.List[string]]::new()
+	foreach ($extension in @($Certificate.Extensions)) {
+		if ($extension.Oid.Value -ne "2.5.29.37") {
+			continue
+		}
+		$eku = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new(
+		    $extension, $extension.Critical)
+		foreach ($oid in @($eku.EnhancedKeyUsages)) {
+			$oids.Add([string]$oid.Value)
+		}
+	}
+	return $oids.ToArray()
+}
+
+function Get-SigningCertificate {
 	if (-not [string]::IsNullOrWhiteSpace($CertificatePath)) {
 		$resolvedCertificate = (Resolve-Path -LiteralPath `
 		    $CertificatePath).Path
-		$certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+		return [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
 		    $resolvedCertificate, $CertificatePassword)
-		try {
-			return $certificate.Subject
-		} finally {
-			$certificate.Dispose()
-		}
 	}
 	if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
 		$thumbprint = $CertificateThumbprint.Replace(" ", "")
@@ -203,27 +214,61 @@ function Get-SigningCertificateSubject {
 			    Where-Object { $_.Thumbprint -ieq $thumbprint } |
 			    Select-Object -First 1
 			if ($certificate -ne $null) {
-				return $certificate.Subject
+				return $certificate
 			}
 		}
 	}
-	return ""
+	return $null
+}
+
+function Test-SigningCertificateReady(
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
+	if ($Certificate -eq $null) {
+		throw ("signing certificate not found: " +
+		    "thumbprint='$CertificateThumbprint' path='$CertificatePath'")
+	}
+	if ([string]::IsNullOrWhiteSpace($Certificate.Subject)) {
+		throw "signing certificate has no subject"
+	}
+	if ($Certificate.Subject -ne $Publisher) {
+		throw ("MSIX Publisher must match signing certificate subject: " +
+		    "Publisher='$Publisher' Subject='$($Certificate.Subject)'")
+	}
+	if (-not [bool]$Certificate.HasPrivateKey) {
+		throw ("signing certificate has no private key: " +
+		    "Subject='$($Certificate.Subject)'")
+	}
+	$now = [DateTime]::UtcNow
+	if ($Certificate.NotBefore.ToUniversalTime() -gt $now -or
+	    $Certificate.NotAfter.ToUniversalTime() -lt $now) {
+		throw ("signing certificate is outside its validity window: " +
+		    "Subject='$($Certificate.Subject)' NotBefore='$($Certificate.NotBefore.ToString("o"))' NotAfter='$($Certificate.NotAfter.ToString("o"))'")
+	}
+	$codeSigningOid = "1.3.6.1.5.5.7.3.3"
+	$ekuOids = @(Get-CertificateEnhancedKeyUsageOids $Certificate)
+	if ($ekuOids -notcontains $codeSigningOid) {
+		throw ("signing certificate does not include Code Signing EKU " +
+		    "$codeSigningOid`: Subject='$($Certificate.Subject)'")
+	}
+	return [pscustomobject]@{
+	    Subject = $Certificate.Subject
+	    Thumbprint = $Certificate.Thumbprint
+	    HasPrivateKey = [bool]$Certificate.HasPrivateKey
+	    NotBefore = $Certificate.NotBefore.ToString("o")
+	    NotAfter = $Certificate.NotAfter.ToString("o")
+	    EnhancedKeyUsageOids = $ekuOids
+	}
 }
 
 if ($Sign -and [string]::IsNullOrWhiteSpace($CertificatePath) -and
     [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
 	throw "pass -CertificatePath or -CertificateThumbprint when using -Sign"
 }
+$signingCertificateInfo = $null
 if ($Sign) {
-	$signingSubject = Get-SigningCertificateSubject
-	if ([string]::IsNullOrWhiteSpace($signingSubject)) {
-		throw ("signing certificate not found or has no subject: " +
-		    "thumbprint='$CertificateThumbprint'")
-	}
-	if ($signingSubject -ne $Publisher) {
-		throw ("MSIX Publisher must match signing certificate subject: " +
-		    "Publisher='$Publisher' Subject='$signingSubject'")
-	}
+	$signingCertificate = Get-SigningCertificate
+	$signingCertificateInfo =
+	    Test-SigningCertificateReady $signingCertificate
 }
 
 $makeAppxPath = Resolve-MakeAppx
@@ -312,7 +357,8 @@ try {
 				$signArgs += @("/p", $CertificatePassword)
 			}
 		} else {
-			$signArgs += @("/sha1", $CertificateThumbprint)
+			$signArgs += @("/sha1",
+			    $CertificateThumbprint.Replace(" ", ""))
 		}
 		$signArgs += $Output
 		Invoke-Native $signToolPath $signArgs | Out-Null
@@ -339,6 +385,7 @@ try {
 		MakeAppx = $makeAppxPath
 		Signed = $signed
 		SignTool = $signToolPath
+		SigningCertificate = $signingCertificateInfo
 	} | ConvertTo-Json -Depth 3 |
 	    Set-Content -LiteralPath $SummaryPath -Encoding ascii
 

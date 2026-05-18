@@ -149,10 +149,11 @@ evidence fails independently.
 
 The `windows/package-msix.ps1 -Sign` path has also been exercised with a
 temporary self-signed code-signing certificate. The script now preflights that
-the MSIX `Publisher` exactly matches the signing certificate subject before
-calling `signtool.exe`; the test-signed MSIX carried an Authenticode signer but
-reported an untrusted-certificate status, as expected for a disposable
-self-signed certificate that was not installed as trusted.
+the MSIX `Publisher` exactly matches the signing certificate subject, and that
+the certificate has a private key, valid time window, and Code Signing EKU
+before calling `signtool.exe`; the test-signed MSIX carried an Authenticode
+signer but reported an untrusted-certificate status, as expected for a
+disposable self-signed certificate that was not installed as trusted.
 
 Additional local runtime smoke evidence from 2026-05-15: after adding
 near-`MAX_PATH` cwd coverage for panes and `run-shell -c`, rebuilding with
