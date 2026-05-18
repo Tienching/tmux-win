@@ -199,13 +199,17 @@ function Get-BehaviorCategory([string]$Name) {
 		"dynamic pane cwd format" { return "paths" }
 		"source-file config load" { return "configuration" }
 		"key binding round trip" { return "key-bindings" }
+		"key binding notes" { return "key-bindings" }
 
+		"list-commands common entries" { return "commands" }
 		"run-shell command mode" { return "commands" }
 		"run-shell background job" { return "commands" }
 		"if-shell format branch" { return "commands" }
+		"show-messages command log" { return "commands" }
 		"pipe-pane output capture" { return "commands" }
 		"pipe-pane input injection" { return "commands" }
 		"hook execution" { return "hooks" }
+		"hook list" { return "hooks" }
 		"control mode command client" { return "control-mode" }
 		"version probe" { return "version" }
 		default { return "uncategorized" }
@@ -838,6 +842,23 @@ function Run-PlatformCases([string]$Platform,
 		Add-Result $Results $Platform "if-shell format branch" `
 		    ($ifShell -eq "PARITY_IF_TRUE") $ifShell
 
+		$commandList = (Invoke-CheckedTmux $Platform $serverName @(
+		    "list-commands")).Out
+		Add-Result $Results $Platform "list-commands common entries" `
+		    ((Test-Contains $commandList "new-session") -and
+		    (Test-Contains $commandList "split-window") -and
+		    (Test-Contains $commandList "display-message") -and
+		    (Test-Contains $commandList "source-file")) `
+		    $commandList.Trim()
+
+		$messageLog = (Invoke-CheckedTmux $Platform $serverName @(
+		    "show-messages")).Out
+		Add-Result $Results $Platform "show-messages command log" `
+		    ((Test-Contains $messageLog "show-messages") -and
+		    (Test-Contains $messageLog "list-commands") -and
+		    (Test-Contains $messageLog "if-shell")) `
+		    $messageLog.Trim()
+
 		Invoke-CheckedTmux $Platform $serverName @(
 		    "bind-key", "-T", "prefix", "F12",
 		    "display-message", "-p", "PARITY_BIND_OK") | Out-Null
@@ -851,6 +872,19 @@ function Run-PlatformCases([string]$Platform,
 		    ((Test-Contains $keysBeforeUnbind "PARITY_BIND_OK") -and
 		    -not (Test-Contains $keysAfterUnbind "PARITY_BIND_OK")) `
 		    "before=$($keysBeforeUnbind -like '*PARITY_BIND_OK*');after=$($keysAfterUnbind -like '*PARITY_BIND_OK*')"
+
+		Invoke-CheckedTmux $Platform $serverName @(
+		    "bind-key", "-T", "prefix", "-N", "parity note",
+		    "F12", "display-message", "-p", "PARITY_BIND_NOTE") |
+		    Out-Null
+		$keyNotes = (Invoke-CheckedTmux $Platform $serverName @(
+		    "list-keys", "-N")).Out
+		Invoke-CheckedTmux $Platform $serverName @(
+		    "unbind-key", "-T", "prefix", "F12") | Out-Null
+		Add-Result $Results $Platform "key binding notes" `
+		    ((Test-Contains $keyNotes "F12") -and
+		    (Test-Contains $keyNotes "parity note")) `
+		    $keyNotes.Trim()
 
 		Invoke-CheckedTmux $Platform $serverName @(
 		    "rename-window", "-t", "$session`:1", "renamed") |
@@ -1017,6 +1051,13 @@ function Run-PlatformCases([string]$Platform,
 		    "show-environment", "-g", "PARITY_HOOK")).Out.Trim()
 		Add-Result $Results $Platform "hook execution" `
 		    ($hook -eq "PARITY_HOOK=OK") $hook
+
+		$hookList = (Invoke-CheckedTmux $Platform $serverName @(
+		    "show-hooks", "-g", "after-new-window")).Out
+		Add-Result $Results $Platform "hook list" `
+		    ((Test-Contains $hookList "after-new-window") -and
+		    (Test-Contains $hookList "PARITY_HOOK")) `
+		    $hookList.Trim()
 
 		Invoke-CheckedTmux $Platform $serverName @(
 		    "new-window", "-d", "-t", $session, "-n", "respawn",
