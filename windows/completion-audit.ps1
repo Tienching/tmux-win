@@ -61,6 +61,11 @@ function Add-Checklist([System.Collections.Generic.List[object]]$List,
 	})
 }
 
+function Get-Sha256([string]$Path) {
+	return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.
+	    ToLowerInvariant()
+}
+
 if ([string]::IsNullOrWhiteSpace($Output)) {
 	$Output = Join-Path $Dist "completion-audit.json"
 } elseif (-not [System.IO.Path]::IsPathRooted($Output)) {
@@ -173,6 +178,33 @@ $criteria = @(
     "Artifacts are traceable to a clean committed source state",
     "Documented remaining Linux parity gaps"
 )
+
+$packagePath = Join-Path $Dist "tmux-win32-portable"
+if ($release.PSObject.Properties.Name -contains "Package" -and
+    -not [string]::IsNullOrWhiteSpace([string]$release.Package)) {
+	$packagePath = [string]$release.Package
+}
+if (-not [System.IO.Path]::IsPathRooted($packagePath)) {
+	$packagePath = Join-Path (Get-Location) $packagePath
+}
+$packagePath = [System.IO.Path]::GetFullPath($packagePath)
+$packagedTmuxPath = Join-Path $packagePath "tmux.exe"
+$packagedTmuxSha256 = ""
+$packagedTmuxHashCovered = Test-Path -LiteralPath $packagedTmuxPath
+if ($packagedTmuxHashCovered) {
+	$packagedTmuxSha256 = Get-Sha256 $packagedTmuxPath
+}
+Add-Evidence $evidence "packaged tmux binary hash" `
+    $packagedTmuxHashCovered `
+    $(if ($packagedTmuxHashCovered) {
+    "sha256=$packagedTmuxSha256;path=$packagedTmuxPath"
+} else {
+    "packaged tmux.exe not found: $packagedTmuxPath"
+})
+if (-not $packagedTmuxHashCovered) {
+	Add-Missing $missing "packaged tmux binary hash" `
+	    "The release package does not contain a tmux.exe binary to bind parity evidence to."
+}
 
 $steps = @{}
 foreach ($step in @($release.Steps)) {
@@ -525,7 +557,9 @@ if (-not $sourceAndHostedHeadCovered) {
 }
 
 $linuxSurfaceCovered = $false
+$linuxSurfaceHashCovered = $false
 $linuxBehaviorCovered = $false
+$linuxBehaviorHashCovered = $false
 $linuxBehaviorCategoryCovered = $false
 $linuxBehaviorCategoryDetail = "not covered"
 if (-not [string]::IsNullOrWhiteSpace($LinuxParitySummary)) {
@@ -547,10 +581,31 @@ if (-not [string]::IsNullOrWhiteSpace($LinuxParitySummary)) {
 	    $linuxParity.MissingLinuxSurfaceItemsOnWindows,
 	    $defaultOptionMismatches,
 	    $LinuxParitySummary)
+	$linuxSurfaceHashDetail =
+	    "WindowsTmuxSha256 is not present or empty.;source=$LinuxParitySummary"
+	if ($linuxParity.PSObject.Properties.Name -contains
+	    "WindowsTmuxSha256" -and
+	    -not [string]::IsNullOrWhiteSpace(
+	    [string]$linuxParity.WindowsTmuxSha256)) {
+		$linuxSurfaceTmuxSha256 =
+		    ([string]$linuxParity.WindowsTmuxSha256).ToLowerInvariant()
+		$linuxSurfaceHashCovered = $packagedTmuxHashCovered -and
+		    $linuxSurfaceTmuxSha256 -eq $packagedTmuxSha256
+		$linuxSurfaceHashDetail =
+		    ("windows_tmux_sha256={0};package_sha256={1};source={2}" -f `
+		    $linuxSurfaceTmuxSha256, $packagedTmuxSha256,
+		    $LinuxParitySummary)
+	}
+	Add-Evidence $evidence "Linux surface parity binary traceability" `
+	    $linuxSurfaceHashCovered $linuxSurfaceHashDetail
 	if (-not $linuxSurfaceCovered) {
 		Add-Missing $missing "Linux command/option/key surface gaps" `
 		    ("The Linux parity matrix found Linux surface items missing " +
 		    "on Windows or unapproved default option differences.")
+	}
+	if (-not $linuxSurfaceHashCovered) {
+		Add-Missing $missing "Linux surface parity binary traceability" `
+		    "The Linux surface parity summary is not tied to the packaged tmux.exe SHA256."
 	}
 }
 if (-not [string]::IsNullOrWhiteSpace($LinuxBehaviorSummary)) {
@@ -563,9 +618,30 @@ if (-not [string]::IsNullOrWhiteSpace($LinuxBehaviorSummary)) {
 	    ("passed={0};failed={1};source={2}" -f `
 	    $linuxBehavior.Passed, $linuxBehavior.Failed,
 	    $LinuxBehaviorSummary)
+	$linuxBehaviorHashDetail =
+	    "WindowsTmuxSha256 is not present or empty.;source=$LinuxBehaviorSummary"
+	if ($linuxBehavior.PSObject.Properties.Name -contains
+	    "WindowsTmuxSha256" -and
+	    -not [string]::IsNullOrWhiteSpace(
+	    [string]$linuxBehavior.WindowsTmuxSha256)) {
+		$linuxBehaviorTmuxSha256 =
+		    ([string]$linuxBehavior.WindowsTmuxSha256).ToLowerInvariant()
+		$linuxBehaviorHashCovered = $packagedTmuxHashCovered -and
+		    $linuxBehaviorTmuxSha256 -eq $packagedTmuxSha256
+		$linuxBehaviorHashDetail =
+		    ("windows_tmux_sha256={0};package_sha256={1};source={2}" -f `
+		    $linuxBehaviorTmuxSha256, $packagedTmuxSha256,
+		    $LinuxBehaviorSummary)
+	}
+	Add-Evidence $evidence "Linux behavior parity binary traceability" `
+	    $linuxBehaviorHashCovered $linuxBehaviorHashDetail
 	if (-not $linuxBehaviorCovered) {
 		Add-Missing $missing "Linux focused behavior parity gaps" `
 		    "The focused Linux/Windows behavior matrix has failing cases."
+	}
+	if (-not $linuxBehaviorHashCovered) {
+		Add-Missing $missing "Linux behavior parity binary traceability" `
+		    "The Linux behavior parity summary is not tied to the packaged tmux.exe SHA256."
 	}
 	if ($linuxBehavior.PSObject.Properties.Name -contains
 	    "CategoryCoverage") {
@@ -602,10 +678,11 @@ if (-not [string]::IsNullOrWhiteSpace($LinuxBehaviorSummary)) {
 		    "The Linux behavior summary does not include CategoryCoverage."
 	}
 }
-if (-not ($linuxSurfaceCovered -and $linuxBehaviorCovered -and
+if (-not ($linuxSurfaceCovered -and $linuxSurfaceHashCovered -and
+    $linuxBehaviorCovered -and $linuxBehaviorHashCovered -and
     $linuxBehaviorCategoryCovered)) {
 	Add-Missing $missing "Linux behavior parity matrix gaps" `
-	    "Linux surface, focused behavior, or category coverage evidence is incomplete."
+	    "Linux surface, focused behavior, category coverage, or binary traceability evidence is incomplete."
 }
 if (-not $boundaryLoaded) {
 	Add-Missing $missing "Windows ACL/domain/service edge cases" `
@@ -722,16 +799,20 @@ Add-Checklist $checklist "Clean committed source state" `
 	"Release artifacts are not tied to a clean committed source tree."
     })
 Add-Checklist $checklist "Linux behavior parity evidence" `
-    ($linuxSurfaceCovered -and $linuxBehaviorCovered -and
+    ($linuxSurfaceCovered -and $linuxSurfaceHashCovered -and
+    $linuxBehaviorCovered -and $linuxBehaviorHashCovered -and
     $linuxBehaviorCategoryCovered) @(
     "Linux command/option/key surface parity",
+    "Linux surface parity binary traceability",
     "Linux focused behavior parity",
+    "Linux behavior parity binary traceability",
     "Linux behavior category coverage"
-) $(if ($linuxSurfaceCovered -and $linuxBehaviorCovered -and
+) $(if ($linuxSurfaceCovered -and $linuxSurfaceHashCovered -and
+    $linuxBehaviorCovered -and $linuxBehaviorHashCovered -and
     $linuxBehaviorCategoryCovered) {
     ""
 } else {
-    "Linux surface, focused behavior, or category coverage evidence is missing."
+    "Linux surface, focused behavior, category coverage, or binary traceability evidence is missing."
 })
 Add-Checklist $checklist "Windows IPC ACL/domain/service boundary evidence" `
     ($boundarySystemPassed -and $boundaryOtherUserPassed) @(
@@ -749,6 +830,8 @@ $audit = [pscustomobject]@{
 	Status = $status
 	SuccessCriteria = $criteria
 	ReleaseSummary = $ReleaseSummary
+	PackagedTmux = $packagedTmuxPath
+	PackagedTmuxSha256 = $packagedTmuxSha256
 	CommandSurfaceSummary = $CommandSurfaceSummary
 	MsixSummary = $MsixSummary
 	VisualTerminalSummary = $VisualTerminalSummary

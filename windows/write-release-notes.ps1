@@ -338,6 +338,23 @@ if ($null -ne $completion) {
 	$missing = @($completion.Missing)
 	$evidenceRows.Add("| Completion audit | $($completion.Status); missing=$($missing.Count) |")
 }
+$completionGapSection = ""
+if ($null -ne $completion -and $missing.Count -gt 0) {
+	$completionGapRows = [System.Collections.Generic.List[string]]::new()
+	foreach ($gap in $missing) {
+		$completionGapRows.Add(
+		    "| $(Format-TableValue ([string]$gap.Name)) | $(Format-TableValue ([string]$gap.Detail)) |")
+	}
+	$completionGapSection = @"
+
+## Completion Gaps
+
+| Gap | Detail |
+| --- | --- |
+$($completionGapRows.ToArray() -join "`n")
+
+"@
+}
 $evidenceSection = ""
 if ($evidenceRows.Count -gt 0) {
 	$evidenceSection = @"
@@ -386,6 +403,7 @@ install/uninstall verification, MSIX packaging, ${visualCoverage}and configured 
 
 $defaultOptionNote
 $evidenceSection
+$completionGapSection
 ## Release Status
 
 These artifacts are not production-complete unless the production-ready
