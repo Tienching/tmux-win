@@ -216,8 +216,11 @@ if ($Sign -and [string]::IsNullOrWhiteSpace($CertificatePath) -and
 }
 if ($Sign) {
 	$signingSubject = Get-SigningCertificateSubject
-	if (-not [string]::IsNullOrWhiteSpace($signingSubject) -and
-	    $signingSubject -ne $Publisher) {
+	if ([string]::IsNullOrWhiteSpace($signingSubject)) {
+		throw ("signing certificate not found or has no subject: " +
+		    "thumbprint='$CertificateThumbprint'")
+	}
+	if ($signingSubject -ne $Publisher) {
 		throw ("MSIX Publisher must match signing certificate subject: " +
 		    "Publisher='$Publisher' Subject='$signingSubject'")
 	}
