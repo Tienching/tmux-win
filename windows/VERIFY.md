@@ -346,6 +346,9 @@ This writes whether the package is unsigned, signed-but-untrusted, or trusted.
 It also records whether the MSIX summary SHA256 matches the actual package,
 whether the summary Publisher matches the package manifest Publisher, and
 whether a signer subject matches the manifest Publisher.
+It also inventories local personal-store code-signing certificates, including
+private-key availability, validity window, and whether any certificate subject
+matches the MSIX Publisher.
 `verify-release-artifacts.ps1 -RequireSigningAudit` rejects those metadata
 mismatches independently of whether production trusted signing is required.
 

@@ -68,6 +68,73 @@ function Read-MsixManifestPublisher([string]$Path) {
 	}
 }
 
+function Get-CertificateEnhancedKeyUsages(
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
+	$items = [System.Collections.Generic.List[object]]::new()
+	foreach ($extension in @($Certificate.Extensions)) {
+		if ($extension.Oid.Value -ne "2.5.29.37") {
+			continue
+		}
+		$eku = [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new(
+		    $extension, $extension.Critical)
+		foreach ($oid in @($eku.EnhancedKeyUsages)) {
+			$items.Add([pscustomobject]@{
+			    Oid = [string]$oid.Value
+			    FriendlyName = [string]$oid.FriendlyName
+			})
+		}
+	}
+	return $items.ToArray()
+}
+
+function Get-CodeSigningCertificateCandidates([string]$Publisher) {
+	$codeSigningOid = "1.3.6.1.5.5.7.3.3"
+	$candidates = [System.Collections.Generic.List[object]]::new()
+	$errors = [System.Collections.Generic.List[object]]::new()
+	foreach ($store in @("Cert:\CurrentUser\My", "Cert:\LocalMachine\My")) {
+		try {
+			$certificates = @(Get-ChildItem -Path $store `
+			    -ErrorAction Stop)
+		} catch {
+			$errors.Add([pscustomobject]@{
+			    Store = $store
+			    Error = $_.Exception.Message
+			})
+			continue
+		}
+		foreach ($certificate in $certificates) {
+			$ekus = @(Get-CertificateEnhancedKeyUsages $certificate)
+			$ekuOids = @($ekus | ForEach-Object { $_.Oid })
+			if ($ekuOids -notcontains $codeSigningOid) {
+				continue
+			}
+			$subjectMatchesPublisher =
+			    -not [string]::IsNullOrWhiteSpace($Publisher) -and
+			    $certificate.Subject -eq $Publisher
+			$now = [DateTime]::UtcNow
+			$isTimeValid =
+			    $certificate.NotBefore.ToUniversalTime() -le $now -and
+			    $certificate.NotAfter.ToUniversalTime() -ge $now
+			$candidates.Add([pscustomobject]@{
+			    Store = $store
+			    Subject = $certificate.Subject
+			    Issuer = $certificate.Issuer
+			    Thumbprint = $certificate.Thumbprint
+			    NotBefore = $certificate.NotBefore.ToString("o")
+			    NotAfter = $certificate.NotAfter.ToString("o")
+			    HasPrivateKey = [bool]$certificate.HasPrivateKey
+			    IsTimeValid = $isTimeValid
+			    SubjectMatchesPublisher = $subjectMatchesPublisher
+			    EnhancedKeyUsages = $ekus
+			})
+		}
+	}
+	return [pscustomobject]@{
+	    Candidates = $candidates.ToArray()
+	    StoreErrors = $errors.ToArray()
+	}
+}
+
 $hash = (Get-FileHash -LiteralPath $Msix -Algorithm SHA256).
     Hash.ToLowerInvariant()
 $signature = Get-AuthenticodeSignature -LiteralPath $Msix
@@ -150,6 +217,17 @@ if ($signer -ne $null -and
 	$metadataMismatches.Add("manifest Publisher unavailable")
 }
 
+$candidateAudit = Get-CodeSigningCertificateCandidates $manifestPublisher
+$signingCertificateCandidates = @($candidateAudit.Candidates)
+$publisherMatchingCandidateCount =
+    @($signingCertificateCandidates | Where-Object {
+	$_.SubjectMatchesPublisher
+    }).Count
+$usablePublisherMatchingCandidateCount =
+    @($signingCertificateCandidates | Where-Object {
+	$_.SubjectMatchesPublisher -and $_.HasPrivateKey -and $_.IsTimeValid
+    }).Count
+
 $status = if ($signature.Status -eq "Valid" -and $signer -ne $null -and
     $metadataMismatches.Count -eq 0) {
 	"trusted"
@@ -176,6 +254,12 @@ $audit = [pscustomobject]@{
 	SummaryPublisherMatchesManifest = $summaryPublisherMatchesManifest
 	SignerSubjectMatchesPublisher = $signerSubjectMatchesPublisher
 	MetadataMismatches = $metadataMismatches.ToArray()
+	CodeSigningCandidateCount = $signingCertificateCandidates.Count
+	PublisherMatchingCandidateCount = $publisherMatchingCandidateCount
+	UsablePublisherMatchingCandidateCount =
+	    $usablePublisherMatchingCandidateCount
+	CodeSigningCertificateCandidates = $signingCertificateCandidates
+	CertificateStoreErrors = $candidateAudit.StoreErrors
 	AuthenticodeStatus = [string]$signature.Status
 	AuthenticodeStatusMessage = [string]$signature.StatusMessage
 	Signer = $(if ($signer -ne $null) {

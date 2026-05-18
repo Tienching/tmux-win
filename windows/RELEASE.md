@@ -171,6 +171,9 @@ manifest publisher:
 
 The script checks `-Publisher` against the signing certificate subject before
 calling `signtool.exe`.
+Use `windows/signing-audit.ps1` before publication to record whether the MSIX
+is trusted and whether the release machine has any code-signing certificate
+whose subject, private key, and validity window match the MSIX Publisher.
 
 ## Hosted CI
 

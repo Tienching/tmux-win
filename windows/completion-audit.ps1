@@ -319,8 +319,28 @@ if (-not [string]::IsNullOrWhiteSpace($SigningSummary)) {
 	$signing = Get-Content -LiteralPath $SigningSummary -Raw |
 	    ConvertFrom-Json
 	$trustedSigningCovered = $signing.Status -eq "trusted"
-	$trustedSigningDetail = ("status={0};authenticode={1};source={2}" -f `
-	    $signing.Status, $signing.AuthenticodeStatus, $SigningSummary)
+	$candidateDetail = ""
+	if ($signing.PSObject.Properties.Name -contains
+	    "CodeSigningCandidateCount") {
+		$candidateDetail +=
+		    (";code_signing_candidates={0}" -f `
+		    $signing.CodeSigningCandidateCount)
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "PublisherMatchingCandidateCount") {
+		$candidateDetail +=
+		    (";publisher_matching_candidates={0}" -f `
+		    $signing.PublisherMatchingCandidateCount)
+	}
+	if ($signing.PSObject.Properties.Name -contains
+	    "UsablePublisherMatchingCandidateCount") {
+		$candidateDetail +=
+		    (";usable_publisher_matching_candidates={0}" -f `
+		    $signing.UsablePublisherMatchingCandidateCount)
+	}
+	$trustedSigningDetail = ("status={0};authenticode={1}{2};source={3}" -f `
+	    $signing.Status, $signing.AuthenticodeStatus, $candidateDetail,
+	    $SigningSummary)
 	Add-Evidence $evidence "production signing audit" `
 	    $trustedSigningCovered $trustedSigningDetail
 }
