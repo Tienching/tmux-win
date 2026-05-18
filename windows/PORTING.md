@@ -292,8 +292,9 @@ and terminal rendering.
   MSIX using Windows SDK `makeappx.exe`, with a full-trust desktop manifest,
   console `tmux.exe` app execution alias, generated PNG assets, SHA256 summary,
   and optional `signtool.exe` signing when a certificate is supplied. MSIX
-  signing requires `-Publisher` to match the signing certificate subject; the
-  script checks that before invoking `signtool.exe`.
+  signing requires `-Publisher` to match the signing certificate subject, and
+  the script checks the certificate private key, validity window, and Code
+  Signing EKU before invoking `signtool.exe`.
 - `windows/release-check.ps1` is the first local release gate: it can build
   `tmux.exe`, create the portable zip, run the packaged runtime smoke, verify
   the zip `.sha256` sidecar, rehash every file recorded in the manifest, run

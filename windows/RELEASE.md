@@ -183,8 +183,9 @@ manifest publisher:
   -CertificatePassword "<password>"
 ```
 
-The script checks `-Publisher` against the signing certificate subject before
-calling `signtool.exe`, and fails before packaging when a requested certificate
+The script checks `-Publisher` against the signing certificate subject, private
+key availability, certificate validity window, and Code Signing EKU before
+calling `signtool.exe`. It fails before packaging when a requested certificate
 thumbprint is not present in the local certificate stores.
 Use `windows/signing-audit.ps1` before publication to record whether the MSIX
 is trusted, whether the release machine has any code-signing certificate whose
