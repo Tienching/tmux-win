@@ -448,6 +448,8 @@ Use `-RequireProductionReady` for the final publication preflight. It is a
 single shorthand for the production-required checks: signed and trusted MSIX,
 signing audit, completion audit status `complete`, IPC boundary audit, Linux
 surface and behavior parity, hosted CI green run, and clean source-state audit.
+Production-only blockers are reported together so signing, completion-audit,
+hosted-CI, and source-state gaps are visible in one failed preflight.
 
 Then refresh release notes so the published notes include the full evidence
 summary:

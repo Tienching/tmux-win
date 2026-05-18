@@ -74,6 +74,13 @@ function Assert-Equal([string]$Name, [string]$Expected, [string]$Actual) {
 	}
 }
 
+function Add-Blocker([System.Collections.Generic.List[string]]$List,
+    [string]$Message) {
+	if (-not [string]::IsNullOrWhiteSpace($Message)) {
+		$List.Add($Message)
+	}
+}
+
 $Package = Resolve-ArtifactPath $Package "tmux-win32-portable" -MustExist
 $ZipPath = Resolve-ArtifactPath $ZipPath "tmux-win32-portable.zip" -MustExist
 $ReleaseSummary = Resolve-ArtifactPath $ReleaseSummary "release-check.json" `
@@ -116,6 +123,7 @@ $requireHostedCiGreenEffective = $RequireHostedCiGreen -or
     $RequireProductionReady
 $requireSourceStateAuditEffective = $RequireSourceStateAudit -or
     $RequireProductionReady
+$productionBlockers = [System.Collections.Generic.List[string]]::new()
 
 $zipSidecar = $ZipPath + ".sha256"
 $expectedZipHash = Read-Sha256Sidecar $zipSidecar
@@ -248,7 +256,12 @@ if (Test-Path -LiteralPath $MsixPath) {
 	$msixSignatureStatus = [string]$signature.Status
 	$msixSigned = $signature.SignerCertificate -ne $null
 	if ($requireSignedMsixEffective -and $signature.Status -ne "Valid") {
-		throw "MSIX signature is not valid: $msixSignatureStatus"
+		$message = "MSIX signature is not valid: $msixSignatureStatus"
+		if ($RequireProductionReady) {
+			Add-Blocker $productionBlockers $message
+		} else {
+			throw $message
+		}
 	}
 } elseif ($requireMsixEffective -or $requireSignedMsixEffective -or
     $release.BuildMsix) {
@@ -286,7 +299,20 @@ if (Test-Path -LiteralPath $SigningSummary) {
 	}
 	if ($requireSignedMsixEffective -and
 	    $signingAudit.Status -ne "trusted") {
-		throw "signing audit does not report trusted: $SigningSummary"
+		$message = "signing audit does not report trusted"
+		if ($signingAudit.PSObject.Properties.Name -contains
+		    "SigningReadinessGaps") {
+			$gaps = @($signingAudit.SigningReadinessGaps)
+			if ($gaps.Count -gt 0) {
+				$message += (": " + ($gaps -join " "))
+			}
+		}
+		$message += ";source=$SigningSummary"
+		if ($RequireProductionReady) {
+			Add-Blocker $productionBlockers $message
+		} else {
+			throw $message
+		}
 	}
 } elseif ($requireSigningAuditEffective) {
 	throw "signing audit not found: $SigningSummary"
@@ -303,11 +329,23 @@ if (Test-Path -LiteralPath $CompletionAudit) {
 	if ($requireCompletionCompleteEffective -and
 	    $completionStatus -ne "complete") {
 		$missing = 0
+		$missingNames = ""
 		if ($completion.PSObject.Properties.Name -contains "Missing") {
 			$missing = @($completion.Missing).Count
+			$missingNames = (@($completion.Missing) |
+			    ForEach-Object { $_.Name }) -join ","
 		}
-		throw ("completion audit is not complete: status={0};missing={1};source={2}" -f `
-		    $completionStatus, $missing, $CompletionAudit)
+		$message = ("completion audit is not complete: status={0};missing={1}" -f `
+		    $completionStatus, $missing)
+		if (-not [string]::IsNullOrWhiteSpace($missingNames)) {
+			$message += ";missing_names=$missingNames"
+		}
+		$message += ";source=$CompletionAudit"
+		if ($RequireProductionReady) {
+			Add-Blocker $productionBlockers $message
+		} else {
+			throw $message
+		}
 	}
 } elseif ($requireCompletionAuditEffective) {
 	throw "completion audit not found: $CompletionAudit"
@@ -434,8 +472,13 @@ if (Test-Path -LiteralPath $HostedCiSummary) {
 	}
 	if ($requireHostedCiGreenEffective -and
 	    $hostedCi.Status -ne "passed") {
-		throw ("hosted CI audit is not green: status={0};detail={1};source={2}" -f `
+		$message = ("hosted CI audit is not green: status={0};detail={1};source={2}" -f `
 		    $hostedCi.Status, $hostedCi.Detail, $HostedCiSummary)
+		if ($RequireProductionReady) {
+			Add-Blocker $productionBlockers $message
+		} else {
+			throw $message
+		}
 	}
 	$hostedCiStatus = $hostedCi.Status
 } elseif ($requireHostedCiAuditEffective -or
@@ -460,10 +503,15 @@ if (Test-Path -LiteralPath $SourceStateSummary) {
 	    "dirty"
 	} else { "clean" })
 	if ($requireSourceStateAuditEffective -and [bool]$sourceState.IsDirty) {
-		throw ("source state is dirty: tracked={0};untracked={1};source={2}" -f `
+		$message = ("source state is dirty: tracked={0};untracked={1};source={2}" -f `
 		    [int]$sourceState.TrackedChangedCount,
 		    [int]$sourceState.UntrackedCount,
 		    $SourceStateSummary)
+		if ($RequireProductionReady) {
+			Add-Blocker $productionBlockers $message
+		} else {
+			throw $message
+		}
 	}
 } elseif ($requireSourceStateAuditEffective) {
 	throw "source state audit not found: $SourceStateSummary"
@@ -480,6 +528,10 @@ if (-not [string]::IsNullOrWhiteSpace($releaseHeadSha) -and
     $releaseHeadSha -ne $sourceStateHeadSha) {
 	throw ("release summary and source-state head SHA mismatch: release={0};source={1}" -f `
 	    $releaseHeadSha, $sourceStateHeadSha)
+}
+if ($RequireProductionReady -and $productionBlockers.Count -gt 0) {
+	throw ("production readiness blockers: {0}" -f `
+	    ($productionBlockers.ToArray() -join " | "))
 }
 
 Write-Host "Windows release artifacts verified."

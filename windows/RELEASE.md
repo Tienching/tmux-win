@@ -124,7 +124,9 @@ This intentionally fails until the MSIX is trusted-signed, completion audit is
 clean, IPC boundary audit passes, and Linux surface and behavior parity
 evidence is present. New release summaries also record the release-check Git
 head, and the production gate rejects artifacts whose release-check head does
-not match source-state.
+not match source-state. Production-only blockers are aggregated in the failure
+message so signing, completion, hosted CI, and source-state gaps can be fixed
+together.
 
 On an elevated release-validation host, add `-RunSystemTaskProbe` to verify a
 temporary SYSTEM scheduled task cannot read the endpoint token. For full
