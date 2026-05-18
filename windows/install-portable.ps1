@@ -90,6 +90,27 @@ function Update-UserPath([string]$Path, [bool]$Add) {
 	    "User")
 }
 
+function Remove-DirectoryWithRetry([string]$Path) {
+	$lastError = $null
+	foreach ($attempt in 1..10) {
+		if (-not (Test-Path -LiteralPath $Path)) {
+			return
+		}
+		try {
+			Remove-Item -LiteralPath $Path -Recurse -Force `
+			    -ErrorAction Stop
+			return
+		} catch {
+			$lastError = $_
+			Start-Sleep -Milliseconds ([Math]::Min(1000,
+			    100 * $attempt))
+		}
+	}
+	if (Test-Path -LiteralPath $Path) {
+		throw $lastError
+	}
+}
+
 function Verify-Install([string]$Path) {
 	$markerPath = Join-Path $Path $MarkerName
 	if (-not (Test-Path -LiteralPath $markerPath)) {
@@ -131,7 +152,7 @@ if ($Uninstall) {
 		if ($AddToUserPath) {
 			Update-UserPath $InstallDir $false
 		}
-		Remove-Item -LiteralPath $InstallDir -Recurse -Force
+		Remove-DirectoryWithRetry $InstallDir
 	}
 	Write-Host "uninstalled=$InstallDir"
 	return
@@ -179,7 +200,7 @@ try {
 				    "directory: $InstallDir"
 			}
 		}
-		Remove-Item -LiteralPath $InstallDir -Recurse -Force
+		Remove-DirectoryWithRetry $InstallDir
 	}
 	New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 	Get-ChildItem -LiteralPath $Package -Force | ForEach-Object {
@@ -215,6 +236,6 @@ try {
 } finally {
 	if (-not [string]::IsNullOrWhiteSpace($tempExtract) -and
 	    (Test-Path -LiteralPath $tempExtract)) {
-		Remove-Item -LiteralPath $tempExtract -Recurse -Force
+		Remove-DirectoryWithRetry $tempExtract
 	}
 }
