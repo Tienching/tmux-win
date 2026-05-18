@@ -476,6 +476,34 @@ if (-not [string]::IsNullOrWhiteSpace($HostedCiSummary)) {
 			    (";local_workflow_sha256={0}" -f `
 			    $hostedCi.LocalWorkflowSha256)
 		}
+		if ($hostedCi.PSObject.Properties.Name -contains
+		    "RemoteBranchChecked") {
+			$hostedCiExtra +=
+			    (";remote_branch_checked={0}" -f `
+			    $hostedCi.RemoteBranchChecked)
+		}
+		if ($hostedCi.PSObject.Properties.Name -contains
+		    "RemoteBranchExists") {
+			$hostedCiExtra +=
+			    (";remote_branch_exists={0}" -f `
+			    $hostedCi.RemoteBranchExists)
+		}
+		if ($hostedCi.PSObject.Properties.Name -contains
+		    "RemoteBranchHeadSha" -and
+		    -not [string]::IsNullOrWhiteSpace(
+			[string]$hostedCi.RemoteBranchHeadSha)) {
+			$hostedCiExtra +=
+			    (";remote_branch_head_sha={0}" -f `
+			    $hostedCi.RemoteBranchHeadSha)
+		}
+		if ($hostedCi.PSObject.Properties.Name -contains
+		    "RemoteBranchDetail" -and
+		    -not [string]::IsNullOrWhiteSpace(
+			[string]$hostedCi.RemoteBranchDetail)) {
+			$hostedCiExtra +=
+			    (";remote_branch_detail={0}" -f `
+			    $hostedCi.RemoteBranchDetail)
+		}
 		$hostedCiDetail = ("status={0};detail={1}{2};source={3}" -f `
 		    $hostedCi.Status, $hostedCi.Detail, $hostedCiExtra,
 		    $HostedCiSummary)

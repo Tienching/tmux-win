@@ -62,6 +62,34 @@ function Test-GitHubTokenPresent {
 	    (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN))
 }
 
+function Invoke-GitText([string[]]$Arguments) {
+	$oldErrorActionPreference = $ErrorActionPreference
+	try {
+		$ErrorActionPreference = "Continue"
+		$output = & git @Arguments 2>$null
+		if ($LASTEXITCODE -ne 0) {
+			return $null
+		}
+		return $output
+	} finally {
+		$ErrorActionPreference = $oldErrorActionPreference
+	}
+}
+
+function Invoke-GitResult([string[]]$Arguments) {
+	$oldErrorActionPreference = $ErrorActionPreference
+	try {
+		$ErrorActionPreference = "Continue"
+		$output = & git @Arguments 2>$null
+		return [pscustomobject]@{
+		    Succeeded = ($LASTEXITCODE -eq 0)
+		    Lines = @($output)
+		}
+	} finally {
+		$ErrorActionPreference = $oldErrorActionPreference
+	}
+}
+
 function Add-QueryParameter([string]$Uri, [string]$Name, [string]$Value) {
 	if ([string]::IsNullOrWhiteSpace($Value)) {
 		return $Uri
@@ -122,6 +150,9 @@ if ([string]::IsNullOrWhiteSpace($Repository)) {
 if ([string]::IsNullOrWhiteSpace($HeadSha)) {
 	$HeadSha = $env:GITHUB_SHA
 }
+if ([string]::IsNullOrWhiteSpace($Branch)) {
+	$Branch = (Invoke-GitText @("branch", "--show-current") | Select-Object -First 1)
+}
 if ($RunLimit -lt 1) {
 	$RunLimit = 1
 }
@@ -143,6 +174,30 @@ $localWorkflowExists = -not [string]::IsNullOrWhiteSpace($localWorkflowPath) -an
 $localWorkflowSha256 = $(if ($localWorkflowExists) {
     Get-Sha256 $localWorkflowPath
 } else { "" })
+$remoteName = "origin"
+$remoteBranchChecked = $false
+$remoteBranchExists = $false
+$remoteBranchHeadSha = ""
+$remoteBranchDetail = ""
+if (-not [string]::IsNullOrWhiteSpace($Branch)) {
+	$remoteBranchChecked = $true
+	$remoteBranch = Invoke-GitResult @(
+	    "ls-remote", "--heads", $remoteName, $Branch)
+	if (-not $remoteBranch.Succeeded) {
+		$remoteBranchDetail =
+		    "could not query remote branch '$remoteName/$Branch'"
+	} elseif ($remoteBranch.Lines.Count -eq 0) {
+		$remoteBranchDetail =
+		    "branch '$Branch' is not present on remote '$remoteName'"
+	} else {
+		$remoteBranchExists = $true
+		$remoteBranchLine = [string]($remoteBranch.Lines |
+		    Select-Object -First 1)
+		$remoteBranchHeadSha = ($remoteBranchLine -split "\s+")[0]
+		$remoteBranchDetail =
+		    "remote '$remoteName/$Branch' head=$remoteBranchHeadSha"
+	}
+}
 
 $status = "failed"
 $workflow = $null
@@ -151,7 +206,17 @@ $candidateRuns = @()
 $greenRun = $null
 $detail = ""
 
-try {
+if ($remoteBranchChecked -and -not $remoteBranchExists) {
+	$status = "branch_not_pushed"
+	$detail = $remoteBranchDetail
+} elseif ($remoteBranchExists -and
+    -not [string]::IsNullOrWhiteSpace($HeadSha) -and
+    $remoteBranchHeadSha -ne $HeadSha) {
+	$status = "remote_head_mismatch"
+	$detail = ("remote branch head {0} does not match local head {1}" -f `
+	    $remoteBranchHeadSha, $HeadSha)
+} else {
+	try {
 	$workflowResponse = Invoke-GitHubApi `
 	    "https://api.github.com/repos/$Repository/actions/workflows"
 	$workflows = @($workflowResponse.workflows)
@@ -202,6 +267,7 @@ try {
 	$status = "blocked"
 	$detail = Get-ExceptionDetail $_
 }
+}
 
 $summary = [pscustomobject]@{
 	GeneratedUtc = [DateTime]::UtcNow.ToString("o")
@@ -215,6 +281,11 @@ $summary = [pscustomobject]@{
 	LocalWorkflowPath = $localWorkflowPath
 	LocalWorkflowExists = $localWorkflowExists
 	LocalWorkflowSha256 = $localWorkflowSha256
+	RemoteName = $remoteName
+	RemoteBranchChecked = $remoteBranchChecked
+	RemoteBranchExists = $remoteBranchExists
+	RemoteBranchHeadSha = $remoteBranchHeadSha
+	RemoteBranchDetail = $remoteBranchDetail
 	Status = $status
 	Detail = $detail
 	Workflow = $(if ($null -ne $workflow -and $workflow.Count -ne 0) {

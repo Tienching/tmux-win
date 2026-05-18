@@ -204,9 +204,9 @@ and store it in `hosted-ci-audit.json`.
 For local release validation, set `GH_TOKEN` or `GITHUB_TOKEN` before running
 `windows/hosted-ci-audit.ps1` so GitHub API rate limits do not hide the actual
 hosted workflow status.
-The audit also records the local workflow file hash so a `missing_workflow`
-result can be distinguished from a workflow file that exists locally but has
-not reached the target GitHub repository.
+The audit also records the local workflow file hash and the `origin` branch
+state so a `missing_workflow`, `branch_not_pushed`, or `remote_head_mismatch`
+result can be distinguished from a real hosted workflow failure.
 
 For release-candidate artifacts, run `.github/workflows/windows-release.yml`
 manually with a tag or ref. By default it builds, verifies, writes release
