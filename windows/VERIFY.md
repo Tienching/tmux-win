@@ -361,6 +361,17 @@ code-signing certificate.
 `verify-release-artifacts.ps1 -RequireSigningAudit` rejects those metadata
 mismatches independently of whether production trusted signing is required.
 
+To exercise the local MSIX signing code path without a production certificate,
+run:
+
+```powershell
+.\windows\msix-signing-smoke.ps1
+```
+
+This creates a temporary CurrentUser self-signed Code Signing certificate,
+builds and signs a temporary MSIX, audits the signer and metadata, then removes
+the certificate and temporary artifacts unless `-KeepArtifacts` is passed.
+
 ## Release gate
 
 The current local release gate is:

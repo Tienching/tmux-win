@@ -22,6 +22,7 @@ EXTRA_DIST = \
 	windows/job-stress.ps1 \
 	windows/linux-behavior-parity.ps1 \
 	windows/linux-parity-matrix.ps1 \
+	windows/msix-signing-smoke.ps1 \
 	windows/package-mingw.ps1 \
 	windows/package-msix.ps1 \
 	windows/PARITY-AUDIT.md \
