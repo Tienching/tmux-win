@@ -404,8 +404,29 @@ if (-not [string]::IsNullOrWhiteSpace($HostedCiSummary)) {
 		if ($hostedCi.PSObject.Properties.Name -contains "HeadSha") {
 			$hostedCiTargetHeadSha = [string]$hostedCi.HeadSha
 		}
-		$hostedCiDetail = ("status={0};detail={1};source={2}" -f `
-		    $hostedCi.Status, $hostedCi.Detail, $HostedCiSummary)
+		$hostedCiExtra = ""
+		if ($hostedCi.PSObject.Properties.Name -contains
+		    "Authenticated") {
+			$hostedCiExtra +=
+			    (";authenticated={0}" -f $hostedCi.Authenticated)
+		}
+		if ($hostedCi.PSObject.Properties.Name -contains
+		    "LocalWorkflowExists") {
+			$hostedCiExtra +=
+			    (";local_workflow_exists={0}" -f `
+			    $hostedCi.LocalWorkflowExists)
+		}
+		if ($hostedCi.PSObject.Properties.Name -contains
+		    "LocalWorkflowSha256" -and
+		    -not [string]::IsNullOrWhiteSpace(
+			[string]$hostedCi.LocalWorkflowSha256)) {
+			$hostedCiExtra +=
+			    (";local_workflow_sha256={0}" -f `
+			    $hostedCi.LocalWorkflowSha256)
+		}
+		$hostedCiDetail = ("status={0};detail={1}{2};source={3}" -f `
+		    $hostedCi.Status, $hostedCi.Detail, $hostedCiExtra,
+		    $HostedCiSummary)
 	}
 }
 if (-not [string]::IsNullOrWhiteSpace($HostedCiRunUrl)) {
