@@ -308,7 +308,8 @@ and terminal rendering.
   `-SignalMatrixIterations`, config parser/source-file stress by passing
   `-RunConfigStress`, repeated packaged smokes by passing `-StressIterations`,
   a mixed workload soak by passing `-SoakSeconds`, a real-console attach soak
-  by passing `-ConsoleSoakSeconds`, and a visible Windows Terminal UIA check by
+  by passing `-ConsoleSoakSeconds`, clipboard contention stress by passing
+  `-ClipboardStressIterations`, and a visible Windows Terminal UIA check by
   passing `-RunVisualTerminalVerify`; its default smoke command timeout is
   higher than the standalone smoke default to reduce slow-host release-gate
   flakes.
@@ -317,11 +318,12 @@ and terminal rendering.
   libevent on `windows-latest`, runs `windows/release-check.ps1` with one
   packaged stress iteration, targeted respawn stress, IPC ACL/token stress,
   job stress, multi-client lifecycle stress, signal matrix stress, config
-  parser stress, a short mixed soak, a short console attach soak, two repeated
-  real-console reattach cycles, unsigned MSIX packaging, IPC boundary audit,
-  and writes release notes plus a completion audit and an Actions step summary
-  before uploading the portable Windows zip, MSIX, release-check summary, IPC
-  boundary audit, completion audit, and release notes artifacts.
+  parser stress, clipboard contention stress, a short mixed soak, a short
+  console attach soak, two repeated real-console reattach cycles, unsigned
+  MSIX packaging, IPC boundary audit, and writes release notes plus a
+  completion audit and an Actions step summary before uploading the portable
+  Windows zip, MSIX, release-check summary, IPC boundary audit, completion
+  audit, and release notes artifacts.
 - `.github/workflows/windows-release.yml` is a manual release-candidate
   workflow for a tag or ref. It runs the same Windows release gate, verifies
   artifacts, writes release notes, uploads artifacts, and can create only draft
@@ -384,8 +386,8 @@ and terminal rendering.
   detach, and server cleanup. `release-check` can include it with
   `-ClientStressIterations`.
 - `windows/signal-matrix-stress.ps1` repeatedly exercises Windows pane signal
-  delivery for `C-c`, `C-Break`, cmd-hosted and PowerShell children, and raw
-  `C-c` ETX input. `release-check` can include it with
+  delivery for `C-c`, controlled `C-Break`, cmd-hosted and PowerShell
+  children, and raw `C-c` ETX input. `release-check` can include it with
   `-SignalMatrixIterations`.
 - `windows/config-parser-stress.ps1` exercises semicolon-separated config
   commands, explicit nested `source-file`, `%ENV%` source globs, paths with

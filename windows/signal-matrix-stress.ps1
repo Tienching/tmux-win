@@ -114,6 +114,45 @@ function Wait-FileContains([string]$Path, [string]$Needle,
 	throw "file did not contain ${Needle}: $Path"
 }
 
+function Write-CtrlBreakProbe([string]$Path) {
+	Set-Content -LiteralPath $Path -Encoding ascii -Value @'
+param([string]$Ready, [string]$Output)
+$ErrorActionPreference = "Stop"
+$source = @"
+using System;
+using System.Runtime.InteropServices;
+public static class TmuxSignalMatrixBreakHandler {
+	public delegate bool ConsoleCtrlDelegate(uint type);
+	public static volatile int SeenBreak;
+	public static ConsoleCtrlDelegate Handler =
+	    new ConsoleCtrlDelegate(Handle);
+	public static bool Handle(uint type) {
+		if (type == 1)
+			SeenBreak = 1;
+		return true;
+	}
+	[DllImport("kernel32.dll")]
+	public static extern bool SetConsoleCtrlHandler(
+	    ConsoleCtrlDelegate handler, bool add);
+}
+"@
+Add-Type -TypeDefinition $source
+[void][TmuxSignalMatrixBreakHandler]::SetConsoleCtrlHandler(
+    [TmuxSignalMatrixBreakHandler]::Handler, $true)
+Set-Content -LiteralPath $Ready -Encoding ascii -Value "ready"
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
+while ([DateTime]::UtcNow -lt $deadline) {
+	if ([TmuxSignalMatrixBreakHandler]::SeenBreak -ne 0) {
+		Set-Content -LiteralPath $Output -Encoding ascii `
+		    -Value "CTRL_BREAK"
+		exit 0
+	}
+	Start-Sleep -Milliseconds 50
+}
+exit 2
+'@
+}
+
 function Write-RawEtXProbe([string]$Path) {
 	Set-Content -LiteralPath $Path -Encoding ascii -Value @'
 param([string]$Ready, [string]$Output)
@@ -192,13 +231,21 @@ try {
 		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$breakScript = Join-Path $temp "ctrl-break-$i.ps1"
+		$breakReady = Join-Path $temp "ctrl-break-ready-$i.txt"
+		$breakOutput = Join-Path $temp "ctrl-break-output-$i.txt"
+		Write-CtrlBreakProbe $breakScript
+		$breakCommand = "powershell -NoProfile -NonInteractive " +
+		    "-ExecutionPolicy Bypass -File `"$breakScript`" " +
+		    "-Ready `"$breakReady`" -Output `"$breakOutput`""
 		Invoke-SignalTmux $serverName @(
-		    "send-keys", "-t", "signals:0.0",
-		    'powershell -NoProfile -Command "Start-Sleep -Seconds 30"',
+		    "send-keys", "-t", "signals:0.0", $breakCommand,
 		    "Enter") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "powershell.exe"
+		Wait-FileContains $breakReady "ready"
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
+		Wait-FileContains $breakOutput "CTRL_BREAK"
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
 		Invoke-SignalTmux $serverName @(

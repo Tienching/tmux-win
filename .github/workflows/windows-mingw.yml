@@ -52,6 +52,7 @@ jobs:
             -SoakSeconds 10 `
             -ConsoleSoakSeconds 10 `
             -ConsoleReattachCycles 2 `
+            -ClipboardStressIterations 3 `
             -BuildMsix
 
       - name: Verify Windows release artifacts

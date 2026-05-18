@@ -13,25 +13,27 @@ accepted reason why the Unix behavior does not apply on Windows.
 | --- | --- | --- |
 | Native MinGW build | `windows/build-mingw.ps1` builds `tmux.exe` with bison and libevent. | Covered locally |
 | Portable artifact | `windows/package-mingw.ps1 -Zip -RunSmoke` copies runtime DLLs, writes `manifest.json`, emits `.zip` and `.sha256`. | Covered locally |
-| Release verifier | `windows/release-check.ps1` builds or reuses `tmux.exe`, packages, runs packaged smoke, verifies zip and manifest hashes, audits command/option/key-binding surface, can build an unsigned MSIX with `-BuildMsix`, verifies zip install/uninstall, can run targeted respawn stress, packaged smoke stress, mixed soak, console attach soak, optional clipboard contention stress, and optional visible Windows Terminal UI verification with `-RunVisualTerminalVerify`, and writes `dist/release-check.json` with the passed gate steps and artifact hashes. | Covered locally |
+| Release verifier | `windows/release-check.ps1` builds or reuses `tmux.exe`, packages, runs packaged smoke, verifies zip and manifest hashes, audits command/option/key-binding surface, can build an unsigned MSIX with `-BuildMsix`, verifies zip install/uninstall, can run targeted respawn stress, packaged smoke stress, mixed soak, console attach soak, clipboard contention stress, and optional visible Windows Terminal UI verification with `-RunVisualTerminalVerify`, and writes `dist/release-check.json` with the passed gate steps and artifact hashes. | Covered locally |
 | Artifact verifier | `windows/verify-release-artifacts.ps1 -RequireMsix` cross-checks the zip sidecar, package manifest hashes, release summary, command-surface summary, MSIX hash summary, and MSIX signature state. | Covered locally |
 | Release notes | `windows/write-release-notes.ps1` generates `dist/windows-release-notes.md` from verified JSON summaries. | Covered locally |
 | Completion audit | `windows/completion-audit.ps1` reads the release summary, command-surface summary, MSIX summary, visible-terminal summary, optional signing audit, optional IPC boundary summary, optional Linux surface parity matrix, optional focused Linux behavior matrix, optional hosted CI audit, and optional source-state audit, then writes `dist/completion-audit.json` with a requirement-to-evidence checklist, covered evidence, and explicit non-completion items. | Reports not complete |
 | Release policy | `windows/RELEASE.md` records the required local gate, required artifacts, signing expectations, hosted CI requirement, and do-not-publish conditions. | Documented |
-| Hosted CI | `.github/workflows/windows-mingw.yml` runs the release check on `windows-latest` with respawn stress, IPC ACL/token stress, job stress, client lifecycle stress, signal matrix stress, one packaged stress iteration, a short mixed soak, a short console attach soak with repeated reattach cycles, unsigned MSIX packaging, artifact verification, IPC boundary audit, release-note generation, completion-audit generation, an Actions step summary with hashes/counts/audit status, and uploads the portable zip, MSIX, release summary, command-surface summary, IPC boundary audit, completion audit, and release notes artifacts. `.github/workflows/windows-release.yml` is a manual release-candidate workflow that can create draft GitHub releases only. | Scaffolded, needs hosted run history |
+| Hosted CI | `.github/workflows/windows-mingw.yml` runs the release check on `windows-latest` with respawn stress, IPC ACL/token stress, job stress, client lifecycle stress, signal matrix stress, clipboard contention stress, one packaged stress iteration, a short mixed soak, a short console attach soak with repeated reattach cycles, unsigned MSIX packaging, artifact verification, IPC boundary audit, release-note generation, completion-audit generation, an Actions step summary with hashes/counts/audit status, and uploads the portable zip, MSIX, release summary, command-surface summary, IPC boundary audit, completion audit, and release notes artifacts. `.github/workflows/windows-release.yml` is a manual release-candidate workflow that can create draft GitHub releases only. | Scaffolded, needs hosted run history |
 
 Latest full local gate evidence, from 2026-05-18:
 
 ```powershell
-.\windows\release-check.ps1 -SkipBuild -RespawnIterations 1 `
-  -IpcAclIterations 1 `
-  -JobStressIterations 1 `
-  -ClientStressIterations 1 `
-  -SignalMatrixIterations 1 `
+.\windows\release-check.ps1 -SkipBuild -RespawnIterations 20 `
+  -IpcAclIterations 3 `
+  -JobStressIterations 10 `
+  -ClientStressIterations 5 `
+  -SignalMatrixIterations 3 `
   -RunConfigStress `
   -StressIterations 1 `
   -SoakSeconds 10 -ConsoleSoakSeconds 10 `
-  -ConsoleReattachCycles 1 -RunVisualTerminalVerify -BuildMsix
+  -ConsoleReattachCycles 2 `
+  -ClipboardStressIterations 3 `
+  -RunVisualTerminalVerify -BuildMsix -SmokeTimeoutSeconds 180
 ```
 
 This passed packaged smoke, zip sidecar verification, manifest hash
@@ -39,8 +41,9 @@ verification, command-surface audit, unsigned MSIX packaging with `makeappx`,
 targeted respawn stress, IPC endpoint ACL/token stress, job stdout/stderr and
 background-process stress, zip install/uninstall verification, multi-client
 lifecycle stress, signal matrix stress, config parser stress, one packaged
-stress iteration, mixed runtime soak, and console attach soak with repeated
-reattach cycles plus raw Ctrl+C ETX delivery. It also passed visible Windows
+stress iteration, mixed runtime soak, console attach soak with repeated
+reattach cycles plus raw Ctrl+C ETX delivery, and clipboard contention stress.
+It also passed visible Windows
 Terminal UI verification that opened a real terminal, attached a client, and
 confirmed the marker output through UI Automation. This run followed a fix in
 `osdep-windows.c` so `pane_current_command` ignores Windows console host helper
@@ -90,10 +93,10 @@ $headSha = (& git rev-parse HEAD).Trim()
 ```
 
 Latest observed portable zip SHA256:
-`0d13c2f695ac43f84192a6c5380f3ebf70ff48df8e59c414f26e83c787e62672`.
+`078bd290e5beeb25dad1f46484e441911073b49b18839ee345a1716f1fe4c092`.
 
 Latest observed unsigned MSIX SHA256:
-`f2ce7dfbda14dad372e84d6ca6597722f0b34e0392f7ef990176522795bbbf0b`.
+`264c9d587324d890de38fef24c75269de904e715a9914d97336065da714c286f`.
 
 Latest completion audit:
 
@@ -132,7 +135,8 @@ and rejects a passed hosted CI summary whose green run has a different head SHA.
 When source-state evidence is present too, the verifier also rejects a
 hosted-CI head SHA that does not match the source-state head SHA.
 With completion evidence required, the verifier also rejects release summaries
-below the documented release-gate stress minimums. Production publication can
+below the documented release-gate stress minimums, including clipboard stress.
+Production publication can
 add `-RequireCompletionComplete` so any remaining completion-audit gap blocks a
 non-draft release, and `-RequireHostedCiGreen` so blocked or missing hosted CI
 evidence fails independently.
@@ -169,10 +173,10 @@ Additional clipboard contention evidence from 2026-05-18:
 portable package while an external process held the Windows clipboard open for
 500ms before each `set-buffer -w` and `refresh-client -l` operation. This
 directly exercises the native clipboard open retry path under transient
-clipboard ownership. `windows/release-check.ps1` can now run the same coverage
-with `-ClipboardStressIterations` and records the result as a
-`clipboard-stress` release step; when enabled from release-check, clipboard
-availability is required so a headless skip cannot be recorded as a pass.
+clipboard ownership. The current full local release-check gate now runs the
+same coverage with `-ClipboardStressIterations 3` and records the result as a
+`clipboard-stress` release step; clipboard availability is required so a
+headless skip cannot be recorded as a pass.
 
 Latest respawn-specific regression evidence from 2026-05-15: after bounding
 ordinary ConPTY/process `CloseHandle` calls as well as `ClosePseudoConsole`,
