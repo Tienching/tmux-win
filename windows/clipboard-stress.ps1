@@ -3,6 +3,7 @@ param(
 	[int]$Iterations = 3,
 	[int]$HoldMilliseconds = 500,
 	[int]$TimeoutSeconds = 60,
+	[switch]$RequireAvailable,
 	[switch]$KeepTemp
 )
 
@@ -334,6 +335,9 @@ exit 2
 $savedClipboard = $null
 try {
 	if (-not (Initialize-SystemClipboard)) {
+		if ($RequireAvailable) {
+			throw "Windows clipboard unavailable"
+		}
 		Write-Host "[SKIP] Windows clipboard unavailable"
 		exit 0
 	}
