@@ -141,6 +141,16 @@ function Get-OptionNames([string[]]$Lines) {
 	} | Sort-Object -Unique)
 }
 
+function Get-OptionDefaults([string[]]$Lines) {
+	$defaults = @{}
+	foreach ($line in $Lines) {
+		if ($line -match '^([^\s]+)\s*(.*)$') {
+			$defaults[$Matches[1]] = $Matches[2]
+		}
+	}
+	return $defaults
+}
+
 function Get-KeyTables([string[]]$Lines) {
 	return @($Lines | ForEach-Object {
 	    if ($_ -match '^\s*bind-key\s+-T\s+(\S+)') {
@@ -173,6 +183,60 @@ function Compare-NameSet([string]$Name, [string[]]$Linux,
 		WindowsCount = $Windows.Count
 		MissingOnWindows = $missingOnWindows
 		WindowsOnly = $windowsOnly
+	}
+}
+
+$allowedDefaultOptionDifferences = @{
+	"global:default-shell" = "platform shell path"
+	"global:lock-command" = "platform lock command"
+	"global:message-command-style" = "next-3.7 style fill default"
+	"global:message-style" = "next-3.7 style fill default"
+	"global:prompt-cursor-colour" = "Windows console cursor rendering"
+	"global:status-format[0]" = "next-3.7 status format change"
+	"global:update-environment[7]" = "environment list ordering/version difference"
+	"global:update-environment[8]" = "environment list ordering/version difference"
+	"server:default-terminal" = "Windows terminal capability name"
+	"server:editor" = "platform editor default"
+	"server:exit-empty" = "Windows detached server lifecycle default"
+	"window:copy-mode-position-format" = "next-3.7 copy-mode format change"
+	"window:pane-border-format" = "next-3.7 mouse control format change"
+}
+
+function Compare-OptionDefaults([string]$Scope, [hashtable]$Linux,
+    [hashtable]$Windows) {
+	$commonNames = @($Linux.Keys | Where-Object {
+	    $Windows.ContainsKey($_)
+	} | Sort-Object)
+	$allowed = [System.Collections.Generic.List[object]]::new()
+	$unallowed = [System.Collections.Generic.List[object]]::new()
+	foreach ($name in $commonNames) {
+		$linuxValue = [string]$Linux[$name]
+		$windowsValue = [string]$Windows[$name]
+		if ($linuxValue -eq $windowsValue) {
+			continue
+		}
+		$key = "$Scope`:$name"
+		$difference = [pscustomobject]@{
+		    Scope = $Scope
+		    Name = $name
+		    Linux = $linuxValue
+		    Windows = $windowsValue
+		    Reason = $(if ($allowedDefaultOptionDifferences.ContainsKey(
+			$key)) { $allowedDefaultOptionDifferences[$key] } else { "" })
+		}
+		if ([string]::IsNullOrWhiteSpace($difference.Reason)) {
+			$unallowed.Add($difference)
+		} else {
+			$allowed.Add($difference)
+		}
+	}
+	return [pscustomobject]@{
+		Scope = $Scope
+		CommonCount = $commonNames.Count
+		AllowedDifferenceCount = $allowed.Count
+		UnallowedDifferenceCount = $unallowed.Count
+		AllowedDifferences = @($allowed.ToArray())
+		UnallowedDifferences = @($unallowed.ToArray())
 	}
 }
 
@@ -211,6 +275,9 @@ function Get-Surface([string]$Platform, [string]$ServerName) {
 			GlobalOptions = Get-OptionNames $globalOptionLines
 			ServerOptions = Get-OptionNames $serverOptionLines
 			WindowOptions = Get-OptionNames $windowOptionLines
+			GlobalOptionDefaults = Get-OptionDefaults $globalOptionLines
+			ServerOptionDefaults = Get-OptionDefaults $serverOptionLines
+			WindowOptionDefaults = Get-OptionDefaults $windowOptionLines
 			KeyTables = Get-KeyTables $keyLines
 			KeyBindingCount = $keyLines.Count
 		}
@@ -243,7 +310,22 @@ foreach ($comparison in $comparisons) {
 	$missingTotal += @($comparison.MissingOnWindows).Count
 }
 
-$status = if ($missingTotal -eq 0) { "passed" } else { "failed" }
+$defaultComparisons = @(
+    Compare-OptionDefaults "global" $linux.GlobalOptionDefaults `
+	$windows.GlobalOptionDefaults
+    Compare-OptionDefaults "server" $linux.ServerOptionDefaults `
+	$windows.ServerOptionDefaults
+    Compare-OptionDefaults "window" $linux.WindowOptionDefaults `
+	$windows.WindowOptionDefaults
+)
+$defaultMismatchTotal = 0
+foreach ($comparison in $defaultComparisons) {
+	$defaultMismatchTotal += [int]$comparison.UnallowedDifferenceCount
+}
+
+$status = if ($missingTotal -eq 0 -and $defaultMismatchTotal -eq 0) {
+	"passed"
+} else { "failed" }
 $summary = [pscustomobject]@{
 	GeneratedUtc = [DateTime]::UtcNow.ToString("o")
 	Status = $status
@@ -253,6 +335,8 @@ $summary = [pscustomobject]@{
 	LinuxVersion = $linux.Version
 	MissingLinuxSurfaceItemsOnWindows = $missingTotal
 	Comparisons = $comparisons
+	DefaultOptionMismatches = $defaultMismatchTotal
+	DefaultOptionComparisons = $defaultComparisons
 	WindowsKeyBindingCount = $windows.KeyBindingCount
 	LinuxKeyBindingCount = $linux.KeyBindingCount
 }
@@ -267,3 +351,4 @@ $summary | ConvertTo-Json -Depth 6 |
 Write-Host "linux_parity_matrix=$Output"
 Write-Host "status=$status"
 Write-Host "missing_linux_surface_items_on_windows=$missingTotal"
+Write-Host "default_option_mismatches=$defaultMismatchTotal"
