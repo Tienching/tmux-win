@@ -166,18 +166,17 @@ ordinary ConPTY/process `CloseHandle` calls as well as `ClosePseudoConsole`,
 against the packaged Windows binary, followed by full runtime smoke and the
 full local release-check gate above.
 
-Additional attached-console soak evidence from 2026-05-15:
+Additional attached-console soak evidence from 2026-05-18:
 
 ```powershell
 .\windows\console-attach-soak.ps1 `
   -Tmux .\dist\tmux-win32-portable\tmux.exe `
-  -DurationSeconds 60 -ReattachCycles 5 -TimeoutSeconds 60
+  -DurationSeconds 120 -ReattachCycles 10 -TimeoutSeconds 120
 ```
 
-This passed against the current portable package after the Windows Terminal
-stdout-proxy fix and IPC bad-token fix: 60 seconds of real-console attach
-input, 30 resize events, five reattach cycles, Ctrl+C/Ctrl+Break interruption
-checks, and raw Ctrl+C ETX delivery.
+This passed against the current portable package: 120 seconds of real-console
+attach input, 60 resize events, ten reattach cycles, Ctrl+C/Ctrl+Break
+interruption checks, and raw Ctrl+C ETX delivery.
 
 Additional mixed runtime soak evidence from 2026-05-15:
 
@@ -301,7 +300,7 @@ is required.
 - Long-running interactive Windows console attach lifecycle is improved by the
   optional console attach soak with input, resize churn, repeated attach/detach
   cycles, Ctrl+C/Ctrl+Break interruption, and raw Ctrl+C ETX delivery. A
-  60-second local run with five reattach cycles has passed, but this is still
+  120-second local run with ten reattach cycles has passed, but this is still
   not complete beyond focused local runs.
 - Full signal parity is not complete beyond the current pane `C-c`, ETX,
   `C-Break`, real-console attached Ctrl+C/Ctrl+Break, and real-console
