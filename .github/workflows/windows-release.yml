@@ -199,8 +199,7 @@ jobs:
             $verifyArgs += "-RequireMsix"
           }
           if ("${{ inputs.create_release }}" -eq "true" -and "${{ inputs.draft }}" -ne "true") {
-            $verifyArgs += "-RequireCompletionComplete"
-            $verifyArgs += "-RequireHostedCiGreen"
+            $verifyArgs += "-RequireProductionReady"
           }
           if (Test-Path .\dist\linux-parity-matrix.json) {
             $verifyArgs += "-RequireLinuxParity"

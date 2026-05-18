@@ -112,6 +112,18 @@ Linux parity, source-state, hosted CI, and completion-audit status:
 .\windows\write-release-notes.ps1
 ```
 
+For production or non-draft publication, run the final preflight with the
+single production gate:
+
+```powershell
+.\windows\verify-release-artifacts.ps1 -RequireProductionReady
+```
+
+This intentionally fails until the MSIX is trusted-signed, completion audit is
+`complete`, hosted CI has a green run for the same head SHA, source-state is
+clean, IPC boundary audit passes, and Linux surface and behavior parity
+evidence is present.
+
 On an elevated release-validation host, add `-RunSystemTaskProbe` to verify a
 temporary SYSTEM scheduled task cannot read the endpoint token. For full
 multi-user coverage, run the same audit with
@@ -222,6 +234,8 @@ artifact bundle without claiming publication readiness.
 - Hosted CI has not produced a green run for the release commit.
 - `verify-release-artifacts.ps1 -RequireHostedCiGreen` fails for a production
   release.
+- `verify-release-artifacts.ps1 -RequireProductionReady` fails for a
+  production or non-draft release.
 - `source-state-audit.json` reports a dirty working tree for production
   release artifacts.
 - The release workflow is asked to create a non-draft release before production
