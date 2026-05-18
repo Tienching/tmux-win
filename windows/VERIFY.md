@@ -308,6 +308,9 @@ This queries the GitHub Actions workflow list for the origin repository and
 records whether the expected Windows workflow exists and has a successful run
 for that head SHA. The script also accepts `-Branch` and `-RunLimit` when the
 release validation needs to narrow or broaden the workflow-run search.
+Set `GH_TOKEN` or `GITHUB_TOKEN` for local release validation to avoid
+anonymous GitHub API rate limits; the hosted workflows provide `GH_TOKEN`
+automatically.
 
 ## Source state audit
 
