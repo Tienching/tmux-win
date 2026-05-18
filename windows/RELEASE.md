@@ -101,7 +101,8 @@ $headSha = (& git rev-parse HEAD).Trim()
   -RequireIpcBoundaryAudit `
   -RequireLinuxParity `
   -RequireLinuxBehaviorParity `
-  -RequireHostedCiAudit
+  -RequireHostedCiAudit `
+  -RequireSourceStateAudit
 ```
 
 Generate release notes after the evidence audits so they include signing, IPC,

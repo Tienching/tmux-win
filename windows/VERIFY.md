@@ -396,7 +396,8 @@ After those evidence files exist, verify the extended artifact set:
   -RequireIpcBoundaryAudit `
   -RequireLinuxParity `
   -RequireLinuxBehaviorParity `
-  -RequireHostedCiAudit
+  -RequireHostedCiAudit `
+  -RequireSourceStateAudit
 ```
 
 With `-RequireHostedCiAudit`, the hosted CI summary must include a non-empty

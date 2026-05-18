@@ -138,6 +138,7 @@ if ($RequireCompletionAudit) {
 	Assert-ReleaseMinimum $release "SoakSeconds" 10
 	Assert-ReleaseMinimum $release "ConsoleSoakSeconds" 10
 	Assert-ReleaseMinimum $release "ConsoleReattachCycles" 2
+	Assert-ReleaseMinimum $release "ClipboardStressIterations" 3
 	if (-not ($release.PSObject.Properties.Name -contains
 	    "RunConfigStress") -or -not [bool]$release.RunConfigStress) {
 		throw "release summary RunConfigStress is not enabled"
