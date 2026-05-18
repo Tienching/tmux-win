@@ -135,6 +135,20 @@ function Read-Sha256Sidecar([string]$Path) {
 	return $Matches[1].ToLowerInvariant()
 }
 
+function Invoke-GitText([string[]]$Arguments) {
+	$oldErrorActionPreference = $ErrorActionPreference
+	try {
+		$ErrorActionPreference = "Continue"
+		$output = & git @Arguments 2>$null
+		if ($LASTEXITCODE -ne 0) {
+			return $null
+		}
+		return $output
+	} finally {
+		$ErrorActionPreference = $oldErrorActionPreference
+	}
+}
+
 $build = Join-Path $PSScriptRoot "build-mingw.ps1"
 $packageScript = Join-Path $PSScriptRoot "package-mingw.ps1"
 $msixScript = Join-Path $PSScriptRoot "package-msix.ps1"
@@ -152,6 +166,15 @@ $soak = Join-Path $PSScriptRoot "soak-runtime.ps1"
 $consoleSoak = Join-Path $PSScriptRoot "console-attach-soak.ps1"
 $clipboardStress = Join-Path $PSScriptRoot "clipboard-stress.ps1"
 $steps = [System.Collections.Generic.List[object]]::new()
+
+$gitHeadSha = [string](Invoke-GitText @("rev-parse", "HEAD"))
+$gitBranch = [string](Invoke-GitText @("branch", "--show-current"))
+$gitStatusOutput = Invoke-GitText @(
+    "status", "--porcelain=v1", "--untracked-files=all")
+$gitStatusLines = @($gitStatusOutput | Where-Object {
+    -not [string]::IsNullOrWhiteSpace([string]$_)
+})
+$gitIsDirty = $gitStatusLines.Count -gt 0
 
 function Add-Step([string]$Name, [string]$Status, [string]$Detail = "") {
 	$steps.Add([pscustomobject]@{
@@ -408,6 +431,9 @@ $summary = [pscustomobject]@{
 	ZipSha256 = $actualZipHash
 	Manifest = $manifestPath
 	Version = $manifest.Version
+	GitHeadSha = $gitHeadSha
+	GitBranch = $gitBranch
+	GitIsDirty = $gitIsDirty
 	CC = $CC
 	CXX = $CXX
 	Yacc = $Yacc

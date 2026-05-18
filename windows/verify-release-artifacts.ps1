@@ -137,6 +137,19 @@ foreach ($file in $manifest.Files) {
 
 $release = Get-Content -LiteralPath $ReleaseSummary -Raw | ConvertFrom-Json
 Assert-Equal "release summary zip sha256" $actualZipHash $release.ZipSha256
+$releaseHeadSha = ""
+if ($release.PSObject.Properties.Name -contains "GitHeadSha") {
+	$releaseHeadSha = [string]$release.GitHeadSha
+}
+if ($RequireProductionReady -and
+    [string]::IsNullOrWhiteSpace($releaseHeadSha)) {
+	throw "release summary missing GitHeadSha for production readiness"
+}
+if ($RequireProductionReady -and
+    $release.PSObject.Properties.Name -contains "GitIsDirty" -and
+    [bool]$release.GitIsDirty) {
+	throw "release summary reports dirty source at release-check time"
+}
 
 function Assert-ReleaseMinimum([object]$Summary, [string]$Property,
     [int]$Minimum) {
@@ -432,6 +445,12 @@ if (-not [string]::IsNullOrWhiteSpace($hostedCiHeadSha) -and
     $hostedCiHeadSha -ne $sourceStateHeadSha) {
 	throw ("hosted CI and source-state head SHA mismatch: hosted={0};source={1}" -f `
 	    $hostedCiHeadSha, $sourceStateHeadSha)
+}
+if (-not [string]::IsNullOrWhiteSpace($releaseHeadSha) -and
+    -not [string]::IsNullOrWhiteSpace($sourceStateHeadSha) -and
+    $releaseHeadSha -ne $sourceStateHeadSha) {
+	throw ("release summary and source-state head SHA mismatch: release={0};source={1}" -f `
+	    $releaseHeadSha, $sourceStateHeadSha)
 }
 
 Write-Host "Windows release artifacts verified."
