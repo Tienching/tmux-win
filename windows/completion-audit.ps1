@@ -487,17 +487,26 @@ $linuxBehaviorCategoryDetail = "not covered"
 if (-not [string]::IsNullOrWhiteSpace($LinuxParitySummary)) {
 	$linuxParity = Get-Content -LiteralPath $LinuxParitySummary -Raw |
 	    ConvertFrom-Json
+	$defaultOptionMismatches = 0
+	if ($linuxParity.PSObject.Properties.Name -contains
+	    "DefaultOptionMismatches") {
+		$defaultOptionMismatches =
+		    [int]$linuxParity.DefaultOptionMismatches
+	}
 	$linuxSurfaceCovered = $linuxParity.Status -eq "passed" -and
-	    [int]$linuxParity.MissingLinuxSurfaceItemsOnWindows -eq 0
+	    [int]$linuxParity.MissingLinuxSurfaceItemsOnWindows -eq 0 -and
+	    $defaultOptionMismatches -eq 0
 	Add-Evidence $evidence "Linux command/option/key surface parity" `
 	    $linuxSurfaceCovered `
-	    ("windows={0};linux={1};missing={2};source={3}" -f `
+	    ("windows={0};linux={1};missing={2};default_mismatches={3};source={4}" -f `
 	    $linuxParity.WindowsVersion, $linuxParity.LinuxVersion,
 	    $linuxParity.MissingLinuxSurfaceItemsOnWindows,
+	    $defaultOptionMismatches,
 	    $LinuxParitySummary)
 	if (-not $linuxSurfaceCovered) {
 		Add-Missing $missing "Linux command/option/key surface gaps" `
-		    "The Linux parity matrix found Linux surface items missing on Windows."
+		    ("The Linux parity matrix found Linux surface items missing " +
+		    "on Windows or unapproved default option differences.")
 	}
 }
 if (-not [string]::IsNullOrWhiteSpace($LinuxBehaviorSummary)) {
@@ -639,7 +648,7 @@ Add-Checklist $checklist "Command, option, and key-binding surface parity" `
     "command surface counts",
     "Linux command/option/key surface parity"
 ) $(if ($surfaceCovered -and $linuxSurfaceCovered) { "" } else {
-    "Command-surface or Linux surface parity evidence is missing."
+    "Command-surface evidence, Linux surface parity evidence, or Linux default option parity evidence is missing."
 })
 Add-Checklist $checklist `
     "Packaging, install/uninstall, MSIX artifact, and release notes" `

@@ -188,7 +188,13 @@ if ($null -ne $ipcBoundary) {
 	$evidenceRows.Add("| IPC boundary audit | $($ipcBoundary.Status); failed=$($failed.Count) |")
 }
 if ($null -ne $linuxParity) {
-	$evidenceRows.Add("| Linux surface parity | $($linuxParity.Status); missing=$($linuxParity.MissingLinuxSurfaceItemsOnWindows) |")
+	$defaultOptionMismatches = ""
+	if ($linuxParity.PSObject.Properties.Name -contains
+	    "DefaultOptionMismatches") {
+		$defaultOptionMismatches =
+		    "; default_mismatches=$($linuxParity.DefaultOptionMismatches)"
+	}
+	$evidenceRows.Add("| Linux surface parity | $($linuxParity.Status); missing=$($linuxParity.MissingLinuxSurfaceItemsOnWindows)$defaultOptionMismatches |")
 }
 if ($null -ne $linuxBehavior) {
 	$categories = ""
