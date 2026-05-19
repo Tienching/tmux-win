@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -27,6 +27,7 @@ struct win32_process_options {
 	const wchar_t	*cwd;
 	const wchar_t	*environment;
 	int		 show_stderr;
+	int		 discard_stdout;
 };
 
 struct win32_process {
@@ -51,6 +52,18 @@ int		win32_process_terminate(struct win32_process *, unsigned int);
 void		win32_process_close(struct win32_process *);
 unsigned long	win32_process_id(const struct win32_process *);
 
-#endif
+/*
+ * Translate a Windows GetExitCodeProcess() value into a POSIX-style status
+ * word that the existing WIFEXITED/WEXITSTATUS/WIFSIGNALED/WTERMSIG macros
+ * (defined in compat.h) decode correctly.
+ *
+ * NTSTATUS-shaped exception codes (0xC0000005 access violation, 0xC000013A
+ * Ctrl+C, 0x40010005 DBG_CONTROL_C, ...) are mapped to (signal << 0) so
+ * WIFSIGNALED is true and WTERMSIG returns SIGSEGV/SIGINT/etc. Plain
+ * 0..255 exits are encoded as (code << 8) so WIFEXITED is true and
+ * WEXITSTATUS returns the process's exit value.
+ */
+int		win32_native_exit_to_status(unsigned long native);
 
+#endif
 #endif

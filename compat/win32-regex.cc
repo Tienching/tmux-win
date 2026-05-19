@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -69,6 +69,8 @@ regexec(const regex_t *preg, const char *string, size_t nmatch,
 	try {
 		if (!std::regex_search(string, match, *regex, flags))
 			return (REG_NOMATCH);
+	} catch (const std::bad_alloc &) {
+		return (REG_ESPACE);
 	} catch (const std::regex_error &) {
 		return (REG_BADPAT);
 	}

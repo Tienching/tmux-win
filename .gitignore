@@ -27,3 +27,17 @@ tmux-client-*.log
 tmux-out-*.log
 tmux-server-*.log
 tmux.1.*
+# Windows native port build & release artefacts that may leak outside dist/.
+*.msix
+*.appx
+*.zip
+*.sha256
+*.pfx
+*.p12
+*.cer
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.ps1.bak
+windows/dist/

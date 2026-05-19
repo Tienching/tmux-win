@@ -177,7 +177,8 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	/*
 	 * If this is a new client, check for nesting and save the POSIX
 	 * termios settings (part of which is used for new windows in this
-	 * session). Windows console modes are handled by the stdio bridge.
+	 * session). Windows console modes are handled by the stdio bridge
+	 * (c->fd is always -1 there, so we omit that guard on Windows).
 	 *
 	 * tcgetattr() is used rather than using tty.tio since if the client is
 	 * detached, tty_open won't be called. It must be done before opening
@@ -185,18 +186,21 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	 * over.
 	 */
 	tiop = NULL;
-	if (!detached && !already_attached && (~c->flags & CLIENT_CONTROL)) {
+	if (!detached &&
+	    !already_attached &&
+#ifndef _WIN32
+	    c->fd != -1 &&
+#endif
+	    (~c->flags & CLIENT_CONTROL)) {
 		if (server_client_check_nested(cmdq_get_client(item))) {
 			cmdq_error(item, "sessions should be nested with care, "
 			    "unset $TMUX to force");
 			goto fail;
 		}
 #ifndef _WIN32
-		if (c->fd != -1) {
-			if (tcgetattr(c->fd, &tio) != 0)
-				fatal("tcgetattr failed");
-			tiop = &tio;
-		}
+		if (tcgetattr(c->fd, &tio) != 0)
+			fatal("tcgetattr failed");
+		tiop = &tio;
 #endif
 	}
 

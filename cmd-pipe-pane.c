@@ -75,6 +75,12 @@ cmd_pipe_pane_close(struct window_pane *wp)
 
 	bufferevent_free(wp->pipe_event);
 #ifdef _WIN32
+	if (wp->win32_pipe_process != NULL &&
+	    wp->win32_pipe_socket != (uintptr_t)-1) {
+		win32_socket_shutdown(wp->win32_pipe_socket, 1);
+		win32_process_wait((struct win32_process *)
+		    wp->win32_pipe_process, 1000, NULL);
+	}
 	win32_socket_close(wp->win32_pipe_socket);
 	if (wp->win32_pipe_process != NULL) {
 		win32_process_close((struct win32_process *)
@@ -211,6 +217,7 @@ cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 	options.argc = spawn_argc;
 	options.argv = argv;
 	options.cwd = cwd;
+	options.discard_stdout = !in;
 
 	if (win32_spawn_process(&options, process, &pipe_socket, 0) != 0) {
 		cmdq_error(item, "spawn error: Windows error %lu",
@@ -222,6 +229,15 @@ cmd_pipe_pane_exec(struct cmd *self, struct cmdq_item *item)
 	if (win32_socket_set_blocking(pipe_socket, 0) != 0) {
 		cmdq_error(item, "socket error: Windows error %lu",
 		    GetLastError());
+		win32_process_close(process);
+		free(process);
+		win32_socket_close(pipe_socket);
+		free(cmd);
+		return (CMD_RETURN_ERROR);
+	}
+	if (!out && win32_socket_shutdown(pipe_socket, 1) != 0) {
+		cmdq_error(item, "socket shutdown error: Windows error %lu",
+		    WSAGetLastError());
 		win32_process_close(process);
 		free(process);
 		win32_socket_close(pipe_socket);

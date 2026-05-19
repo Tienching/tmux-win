@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -159,14 +159,19 @@ out:
 }
 
 static char *
-win32_clipboard_text_to_utf8(const wchar_t *text, size_t *outlen)
+win32_clipboard_text_to_utf8(const wchar_t *text, size_t maxlen, size_t *outlen)
 {
 	wchar_t	*normalized;
 	char	*out;
 	size_t	 i, j, len;
 	int	 bytes;
 
-	len = wcslen(text);
+	for (len = 0; len < maxlen && text[len] != L'\0'; len++)
+		;
+	if (len == maxlen) {
+		SetLastError(ERROR_INVALID_DATA);
+		return (NULL);
+	}
 	if (len == 0) {
 		out = malloc(1);
 		if (out == NULL)
@@ -235,7 +240,7 @@ win32_clipboard_get_text(char **buf, size_t *len)
 	HANDLE	 memory;
 	wchar_t	*locked;
 	char	*out;
-	size_t	 outlen;
+	size_t	 maxlen, outlen;
 	int	 retval = -1;
 
 	if (buf == NULL || len == NULL) {
@@ -253,7 +258,13 @@ win32_clipboard_get_text(char **buf, size_t *len)
 	locked = GlobalLock(memory);
 	if (locked == NULL)
 		goto out;
-	out = win32_clipboard_text_to_utf8(locked, &outlen);
+	maxlen = GlobalSize(memory) / sizeof *locked;
+	if (maxlen == 0) {
+		GlobalUnlock(memory);
+		SetLastError(ERROR_INVALID_DATA);
+		goto out;
+	}
+	out = win32_clipboard_text_to_utf8(locked, maxlen, &outlen);
 	GlobalUnlock(memory);
 	if (out == NULL)
 		goto out;

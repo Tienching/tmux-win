@@ -56,9 +56,6 @@
 
 #ifdef _WIN32
 static const char	*spawn_win32_get_shell(struct environ *);
-static int		 spawn_win32_cwd_is_unc(const char *);
-static int		 spawn_win32_cwd_is_process_supported(const char *);
-static char		*spawn_win32_cmd_pushd(const char *, const char *);
 static char		*spawn_win32_normalize_cwd(const char *);
 static char	       **spawn_win32_make_environment(struct environ *, int *);
 static void		spawn_win32_free_environment(char **, int);
@@ -106,36 +103,6 @@ spawn_win32_get_shell(struct environ *env)
 	if (ee != NULL && ee->value != NULL && checkshell(ee->value))
 		return (ee->value);
 	return (get_default_shell());
-}
-
-static int
-spawn_win32_cwd_is_unc(const char *cwd)
-{
-	return (cwd != NULL && cwd[0] == '\\' && cwd[1] == '\\' &&
-	    strncmp(cwd, "\\\\?\\", 4) != 0);
-}
-
-static int
-spawn_win32_cwd_is_process_supported(const char *cwd)
-{
-	if (cwd == NULL)
-		return (0);
-	if (isalpha((u_char)cwd[0]) && cwd[1] == ':' &&
-	    (cwd[2] == '\\' || cwd[2] == '/') && strlen(cwd) >= MAX_PATH)
-		return (0);
-	return (1);
-}
-
-static char *
-spawn_win32_cmd_pushd(const char *cwd, const char *cmd)
-{
-	char	*new_cmd;
-
-	if (cmd == NULL)
-		xasprintf(&new_cmd, "pushd \"%s\"", cwd);
-	else
-		xasprintf(&new_cmd, "pushd \"%s\" && %s", cwd, cmd);
-	return (new_cmd);
 }
 
 static char *
@@ -208,14 +175,14 @@ spawn_win32_pane(struct window_pane *wp, struct environ *child,
 	wp->cwd = normalized_cwd;
 	cwd = wp->cwd;
 	if (!path_is_directory(cwd) ||
-	    !spawn_win32_cwd_is_process_supported(cwd)) {
+	    !win32_spawn_cwd_is_process_supported(cwd)) {
 		cwd = find_default_cwd();
 		free(wp->cwd);
 		wp->cwd = xstrdup(cwd);
 	}
 	environ_set(child, "PWD", 0, "%s", wp->cwd);
 	process_cwd = wp->cwd;
-	cwd_is_unc = spawn_win32_cwd_is_unc(wp->cwd);
+	cwd_is_unc = win32_spawn_cwd_is_unc(wp->cwd);
 
 	if (wp->argc == 0) {
 		if (checkshell(wp->shell))
@@ -226,7 +193,7 @@ spawn_win32_pane(struct window_pane *wp, struct environ *child,
 			environ_set(child, "ComSpec", 0, "%s",
 			    spawn_win32_get_shell(child));
 		if (cwd_is_unc && win32_shell_is_cmd(shell)) {
-			cmd_cwd = spawn_win32_cmd_pushd(wp->cwd, NULL);
+			cmd_cwd = win32_spawn_cmd_pushd(wp->cwd, NULL);
 			shell_argv[0] = (char *)shell;
 			shell_argv[1] = "/d";
 			shell_argv[2] = "/k";
@@ -258,7 +225,7 @@ spawn_win32_pane(struct window_pane *wp, struct environ *child,
 	    _stricmp(spawn_argv[1], "/d") == 0 &&
 	    (_stricmp(spawn_argv[2], "/c") == 0 ||
 	    _stricmp(spawn_argv[2], "/k") == 0)) {
-		cmd_cwd = spawn_win32_cmd_pushd(wp->cwd, spawn_argv[3]);
+		cmd_cwd = win32_spawn_cmd_pushd(wp->cwd, spawn_argv[3]);
 		shell_argv[0] = spawn_argv[0];
 		shell_argv[1] = spawn_argv[1];
 		shell_argv[2] = spawn_argv[2];
@@ -333,7 +300,8 @@ spawn_window(struct spawn_context *sc, char **cause)
 			TAILQ_FOREACH(wp, &w->panes, entry) {
 				if (wp->fd != -1
 #ifdef _WIN32
-				    || wp->win32_pty != NULL
+				    || (wp->win32_pty != NULL &&
+				    (~wp->flags & PANE_EXITED))
 #endif
 				    )
 					break;
@@ -511,7 +479,8 @@ spawn_pane(struct spawn_context *sc, char **cause)
 	if (sc->flags & SPAWN_RESPAWN) {
 		if ((sc->wp0->fd != -1
 #ifdef _WIN32
-		    || sc->wp0->win32_pty != NULL
+		    || (sc->wp0->win32_pty != NULL &&
+		    (~sc->wp0->flags & PANE_EXITED))
 #endif
 		    ) && (~sc->flags & SPAWN_KILL)) {
 			window_pane_index(sc->wp0, &idx);
@@ -674,7 +643,7 @@ spawn_pane(struct spawn_context *sc, char **cause)
 #endif
 
 #ifndef _WIN32
-	/* Store current working directory and change to new one. */
+    /* Store current working directory and change to new one. */
 	if (getcwd(path, sizeof path) != NULL) {
 		if (chdir(new_wp->cwd) == 0)
 			actual_cwd = new_wp->cwd;

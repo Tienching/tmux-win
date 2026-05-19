@@ -75,7 +75,7 @@ struct popup_data {
 	u_int			  psx;
 	u_int			  psy;
 
-	enum { OFF, MOVE, DRAG_SIZE }  dragging;
+	enum { POPUP_DRAG_OFF, POPUP_DRAG_MOVE, POPUP_DRAG_SIZE } dragging;
 	u_int			  dx;
 	u_int			  dy;
 
@@ -565,8 +565,8 @@ popup_handle_drag(struct client *c, struct popup_data *pd,
 	u_int	px, py;
 
 	if (!MOUSE_DRAG(m->b))
-		pd->dragging = OFF;
-	else if (pd->dragging == MOVE) {
+		pd->dragging = POPUP_DRAG_OFF;
+	else if (pd->dragging == POPUP_DRAG_MOVE) {
 		if (m->x < pd->dx)
 			px = 0;
 		else if (m->x - pd->dx + pd->sx > c->tty.sx)
@@ -586,7 +586,7 @@ popup_handle_drag(struct client *c, struct popup_data *pd,
 		pd->ppx = px;
 		pd->ppy = py;
 		server_redraw_client(c);
-	} else if (pd->dragging == DRAG_SIZE) {
+	} else if (pd->dragging == POPUP_DRAG_SIZE) {
 		if (pd->border_lines == BOX_LINES_NONE) {
 			if (m->x < pd->px + 1)
 				return;
@@ -639,7 +639,7 @@ popup_key_cb(struct client *c, void *data, struct key_event *event)
 	}
 
 	if (KEYC_IS_MOUSE(event->key)) {
-		if (pd->dragging != OFF) {
+		if (pd->dragging != POPUP_DRAG_OFF) {
 			popup_handle_drag(c, pd, m);
 			goto out;
 		}
@@ -670,9 +670,9 @@ popup_key_cb(struct client *c, void *data, struct key_event *event)
 			if (!MOUSE_DRAG(m->b))
 				goto out;
 			if (MOUSE_BUTTONS(m->lb) == MOUSE_BUTTON_1)
-				pd->dragging = MOVE;
+				pd->dragging = POPUP_DRAG_MOVE;
 			else if (MOUSE_BUTTONS(m->lb) == MOUSE_BUTTON_3)
-				pd->dragging = DRAG_SIZE;
+				pd->dragging = POPUP_DRAG_SIZE;
 			pd->dx = m->lx - pd->px;
 			pd->dy = m->ly - pd->py;
 			goto out;

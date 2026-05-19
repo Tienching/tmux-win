@@ -41,6 +41,7 @@
 #include "compat/win32-process.h"
 #include "compat/win32-pty.h"
 #include "compat/win32-socketpair.h"
+#define WIN32_PANE_EXIT_GRACE_USEC 100000
 #endif
 
 /*
@@ -81,13 +82,22 @@ static struct window_pane *window_pane_create(struct window *, u_int, u_int,
 		    u_int);
 static void	window_pane_destroy(struct window_pane *);
 static void	window_pane_full_size_offset(struct window_pane *wp,
-		    u_int *xoff, u_int *yoff, u_int *sx, u_int *sy);
+		    int *xoff, int *yoff, u_int *sx, u_int *sy);
 
 #ifdef _WIN32
 static int
 window_win32_status(unsigned long exit_code)
 {
-	return ((exit_code & 0xff) << 8);
+	/*
+	 * Encode the Win32 ExitCode the same way POSIX waitpid() encodes a
+	 * status word so the existing WIFEXITED/WIFSIGNALED/WTERMSIG macros
+	 * in compat.h decode correctly. NTSTATUS-shaped exception codes
+	 * (0xC0000005, Ctrl-C, ...) are mapped to a POSIX signal in
+	 * win32_native_exit_to_status() rather than collapsed into the
+	 * exit-status field where their low bits would be misinterpreted as
+	 * a (bogus) signal.
+	 */
+	return (win32_native_exit_to_status(exit_code));
 }
 
 static int
@@ -411,6 +421,7 @@ window_pane_destroy_ready(struct window_pane *wp)
 #endif
 #ifdef _WIN32
 	unsigned long pending;
+	struct timeval now, diff;
 #endif
 
 	if (wp->pipe_fd != -1 && EVBUFFER_LENGTH(wp->pipe_event->output) != 0)
@@ -420,6 +431,15 @@ window_pane_destroy_ready(struct window_pane *wp)
 		if (win32_socket_pending(wp->win32_socket, &pending) == 0 &&
 		    pending > 0)
 			return (0);
+		if ((wp->flags & PANE_EXITED) &&
+		    (wp->win32_exit_time.tv_sec != 0 ||
+		    wp->win32_exit_time.tv_usec != 0)) {
+			gettimeofday(&now, NULL);
+			timersub(&now, &wp->win32_exit_time, &diff);
+			if (diff.tv_sec == 0 &&
+			    diff.tv_usec < WIN32_PANE_EXIT_GRACE_USEC)
+				return (0);
+		}
 	}
 #endif
 #ifndef _WIN32
@@ -595,6 +615,8 @@ window_set_active_pane(struct window *w, struct window_pane *wp, int notify)
 
 	if (wp == w->active)
 		return (0);
+	if (w->flags & WINDOW_ZOOMED)
+		window_unzoom(w, 1);
 	lastwp = w->active;
 
 	window_pane_stack_remove(&w->last_panes, wp);
@@ -1180,11 +1202,21 @@ window_pane_read_callback(__unused struct bufferevent *bufev, void *data)
 
 #ifdef _WIN32
 static void
-window_pane_win32_set_exited(struct window_pane *wp,
+window_pane_win32_set_status(struct window_pane *wp,
     unsigned long exit_code)
 {
 	wp->status = window_win32_status(exit_code);
-	wp->flags |= PANE_STATUSREADY|PANE_EXITED;
+	wp->flags |= PANE_STATUSREADY;
+}
+
+static void
+window_pane_win32_set_exited(struct window_pane *wp,
+    unsigned long exit_code)
+{
+	window_pane_win32_set_status(wp, exit_code);
+	if (~wp->flags & PANE_EXITED)
+		gettimeofday(&wp->win32_exit_time, NULL);
+	wp->flags |= PANE_EXITED;
 }
 #endif
 
@@ -1268,7 +1300,8 @@ window_pane_win32_poll_cb(__unused evutil_socket_t fd, __unused short events, vo
 			server_destroy_pane(wp, 1);
 		return;
 	}
-	if (win32_pty_wait((struct win32_pty *)wp->win32_pty, 0,
+	if ((~wp->flags & PANE_STATUSREADY) &&
+	    win32_pty_wait((struct win32_pty *)wp->win32_pty, 0,
 	    &exit_code) == 1)
 		window_pane_win32_set_exited(wp, exit_code);
 }
@@ -1622,7 +1655,7 @@ window_pane_choose_best(struct window_pane **list, u_int size)
  * scrollbars if they were visible but not including the border(s).
  */
 static void
-window_pane_full_size_offset(struct window_pane *wp, u_int *xoff, u_int *yoff,
+window_pane_full_size_offset(struct window_pane *wp, int *xoff, int *yoff,
     u_int *sx, u_int *sy)
 {
 	struct window		*w = wp->window;
@@ -1637,13 +1670,13 @@ window_pane_full_size_offset(struct window_pane *wp, u_int *xoff, u_int *yoff,
 	else
 		sb_w = 0;
 	if (sb_pos == PANE_SCROLLBARS_LEFT) {
-		*xoff = wp->xoff - sb_w;
+		*xoff = (int)wp->xoff - (int)sb_w;
 		*sx = wp->sx + sb_w;
 	} else { /* sb_pos == PANE_SCROLLBARS_RIGHT */
-		*xoff = wp->xoff;
+		*xoff = (int)wp->xoff;
 		*sx = wp->sx + sb_w;
 	}
-	*yoff = wp->yoff;
+	*yoff = (int)wp->yoff;
 	*sy = wp->sy;
 }
 
@@ -1656,9 +1689,10 @@ window_pane_find_up(struct window_pane *wp)
 {
 	struct window		*w;
 	struct window_pane	*next, *best, **list;
-	u_int			 edge, left, right, end, size;
-	int			 status, found;
-	u_int			 xoff, yoff, sx, sy;
+	u_int			 size;
+	int			 edge, left, right, end, status, found;
+	int			 xoff, yoff;
+	u_int			 sx, sy;
 
 	if (wp == NULL)
 		return (NULL);
@@ -1717,9 +1751,10 @@ window_pane_find_down(struct window_pane *wp)
 {
 	struct window		*w;
 	struct window_pane	*next, *best, **list;
-	u_int			 edge, left, right, end, size;
-	int			 status, found;
-	u_int			 xoff, yoff, sx, sy;
+	u_int			 size;
+	int			 edge, left, right, end, status, found;
+	int			 xoff, yoff;
+	u_int			 sx, sy;
 
 	if (wp == NULL)
 		return (NULL);
@@ -1743,8 +1778,8 @@ window_pane_find_down(struct window_pane *wp)
 			edge = 0;
 	}
 
-	left = wp->xoff;
-	right = wp->xoff + wp->sx;
+	left = xoff;
+	right = xoff + sx;
 
 	TAILQ_FOREACH(next, &w->panes, entry) {
 		window_pane_full_size_offset(next, &xoff, &yoff, &sx, &sy);
@@ -1778,9 +1813,10 @@ window_pane_find_left(struct window_pane *wp)
 {
 	struct window		*w;
 	struct window_pane	*next, *best, **list;
-	u_int			 edge, top, bottom, end, size;
-	int			 found;
-	u_int			 xoff, yoff, sx, sy;
+	u_int			 size;
+	int			 edge, top, bottom, end, found;
+	int			 xoff, yoff;
+	u_int			 sx, sy;
 
 	if (wp == NULL)
 		return (NULL);
@@ -1830,9 +1866,10 @@ window_pane_find_right(struct window_pane *wp)
 {
 	struct window		*w;
 	struct window_pane	*next, *best, **list;
-	u_int			 edge, top, bottom, end, size;
-	int			 found;
-	u_int			 xoff, yoff, sx, sy;
+	u_int			 size;
+	int			 edge, top, bottom, end, found;
+	int			 xoff, yoff;
+	u_int			 sx, sy;
 
 	if (wp == NULL)
 		return (NULL);
@@ -1847,8 +1884,8 @@ window_pane_find_right(struct window_pane *wp)
 	if (edge >= w->sx)
 		edge = 0;
 
-	top = wp->yoff;
-	bottom = wp->yoff + wp->sy;
+	top = yoff;
+	bottom = yoff + sy;
 
 	TAILQ_FOREACH(next, &w->panes, entry) {
 		window_pane_full_size_offset(next, &xoff, &yoff, &sx, &sy);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -70,10 +70,12 @@ win32_stdio_input_thread(LPVOID data)
 	char				 buffer[WIN32_STDIO_BUFFER];
 	DWORD				 mode, read;
 	int				 n, sent, offset;
+	int				 empty_reads;
 
 	input_bridge_socket = (SOCKET)bridge->input_bridge_socket;
 	if (input_fd != -1)
 		input_handle = (HANDLE)_get_osfhandle(input_fd);
+	empty_reads = 0;
 	for (;;) {
 		if (input_handle != INVALID_HANDLE_VALUE &&
 		    GetConsoleMode(input_handle, &mode)) {
@@ -81,9 +83,21 @@ win32_stdio_input_thread(LPVOID data)
 			    NULL))
 				break;
 			if (read == 0) {
+				/*
+				 * ReadFile returning success with zero bytes
+				 * normally means a transient empty input
+				 * record on the console; busy-waiting on it
+				 * would peg one CPU at 100% if the stream is
+				 * actually gone. Tolerate a few spurious
+				 * empty reads then treat further ones as EOF
+				 * so the bridge thread can exit cleanly.
+				 */
+				if (++empty_reads > 16)
+					break;
 				Sleep(1);
 				continue;
 			}
+			empty_reads = 0;
 			n = (int)read;
 		} else
 			n = _read(input_fd, buffer, sizeof buffer);
@@ -376,8 +390,6 @@ win32_stdio_bridge_close(struct win32_stdio_bridge *bridge)
 		CancelSynchronousIo((HANDLE)bridge->input_thread);
 	if (bridge->output_thread != NULL)
 		CancelSynchronousIo((HANDLE)bridge->output_thread);
-	win32_stdio_close_fd(&bridge->input_fd);
-	win32_stdio_close_fd(&bridge->output_fd);
 	if (bridge->input_thread != NULL) {
 		WaitForSingleObject((HANDLE)bridge->input_thread, 1000);
 		CloseHandle((HANDLE)bridge->input_thread);
@@ -388,6 +400,8 @@ win32_stdio_bridge_close(struct win32_stdio_bridge *bridge)
 		CloseHandle((HANDLE)bridge->output_thread);
 		bridge->output_thread = NULL;
 	}
+	win32_stdio_close_fd(&bridge->input_fd);
+	win32_stdio_close_fd(&bridge->output_fd);
 	memset(bridge, 0, sizeof *bridge);
 	bridge->input_fd = -1;
 	bridge->output_fd = -1;

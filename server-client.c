@@ -2273,15 +2273,16 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 			tty_resize(&c->tty);
 		} else
 			goto bad;
+		server_client_update_latest(c);
 #else
 		if (datalen != 0)
 			goto bad;
 
 		if (c->flags & CLIENT_CONTROL)
 			break;
+		server_client_update_latest(c);
 		tty_resize(&c->tty);
 #endif
-		server_client_update_latest(c);
 		tty_repeat_requests(&c->tty, 0);
 		recalculate_sizes();
 		if (c->overlay_resize == NULL)

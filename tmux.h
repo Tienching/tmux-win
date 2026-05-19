@@ -363,7 +363,6 @@ enum {
 
 	/* Backspace key. */
 	KEYC_BSPACE,
-	KEYC_BREAK,
 
 	/* Function keys. */
 	KEYC_F1,
@@ -418,6 +417,13 @@ enum {
 	KEYC_MOUSE, /* unclassified mouse event */
 	KEYC_DRAGGING, /* dragging in progress */
 	KEYC_DOUBLECLICK, /* double click complete */
+
+	/*
+	 * Break / Pause key. Appended at the end of the regular key range so
+	 * existing keyc enumerators keep their values; some Windows keyboards
+	 * surface VK_PAUSE / VK_CANCEL via this code.
+	 */
+	KEYC_BREAK,
 
 	/* Mouse key code ranges. Must be at the end. */
 	KEYC_MOUSE_KEYS(MOUSEMOVE),
@@ -1318,6 +1324,7 @@ struct window_pane {
 	uintptr_t	 win32_socket;
 	void		*win32_pty;
 	struct event	 win32_pane_poll_event;
+	struct timeval	 win32_exit_time;
 #endif
 
 	struct window_pane_offset offset;

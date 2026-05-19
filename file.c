@@ -48,10 +48,19 @@ static void	file_read_open_file(struct tmuxpeer *, int, const char *);
 static int
 file_should_open_locally(struct client *c, const char *path)
 {
-#ifdef _WIN32
-	if (strcmp(path, "-") != 0)
-		return (1);
-#endif
+	/*
+	 * The "should open locally" decision is intentionally identical on
+	 * POSIX and Windows: a server-side fopen is only correct when there
+	 * is no remote client (c == NULL) or the client is currently
+	 * attached to this server process. Anything else must round-trip
+	 * through MSG_READ_OPEN/MSG_WRITE_OPEN so the client process owns
+	 * the actual file handle (its working directory may differ from the
+	 * server's).
+	 *
+	 * The "-" path (stdin/stdout) is always remote-routed because the
+	 * server has no useful stdio to read from in that case.
+	 */
+	(void)path;
 	return (c == NULL || (c->flags & CLIENT_ATTACHED));
 }
 
@@ -738,8 +747,7 @@ file_write_close(struct client_files *files, struct imsg *imsg)
 
 /* Client file read error callback. */
 static void
-file_read_error_callback(__unused struct bufferevent *bev, __unused short what,
-    void *arg)
+file_read_error_callback(__unused struct bufferevent *bev, short what, void *arg)
 {
 	struct client_file	*cf = arg;
 	struct msg_read_done	 msg;
@@ -747,7 +755,7 @@ file_read_error_callback(__unused struct bufferevent *bev, __unused short what,
 	log_debug("read error file %d", cf->stream);
 
 	msg.stream = cf->stream;
-	msg.error = 0;
+	msg.error = (what & EVBUFFER_ERROR) ? EIO : 0;
 	proc_send(cf->peer, MSG_READ_DONE, -1, &msg, sizeof msg);
 
 	bufferevent_free(cf->event);

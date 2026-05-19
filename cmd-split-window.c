@@ -27,22 +27,40 @@
 #include "tmux.h"
 
 /*
- * Split a window (add a new pane).
+ * Create a new pane.
  */
 
 #define SPLIT_WINDOW_TEMPLATE "#{session_name}:#{window_index}.#{pane_index}"
 
-static enum cmd_retval	cmd_split_window_exec(struct cmd *,
-			    struct cmdq_item *);
+static enum cmd_retval	cmd_split_window_exec(struct cmd *, struct cmdq_item *);
+
+const struct cmd_entry cmd_new_pane_entry = {
+	.name = "new-pane",
+	.alias = "newp",
+
+	.args = { "bc:de:fF:hIkl:m:p:PR:s:S:t:vZ", 0, -1, NULL },
+	.usage = "[-bdefhIklPvZ] [-c start-directory] [-e environment] "
+		 "[-F format] [-l size] [-m message] [-p percentage] "
+	         "[-s style] [-S active-border-style] "
+	         "[-R inactive-border-style] " CMD_TARGET_PANE_USAGE " "
+	         "[shell-command [argument ...]]",
+
+	.target = { 't', CMD_FIND_PANE, 0 },
+
+	.flags = 0,
+	.exec = cmd_split_window_exec
+};
 
 const struct cmd_entry cmd_split_window_entry = {
 	.name = "split-window",
 	.alias = "splitw",
 
-	.args = { "bc:de:fF:hIl:p:Pt:vZ", 0, -1, NULL },
-	.usage = "[-bdefhIPvZ] [-c start-directory] [-e environment] "
-		 "[-F format] [-l size] " CMD_TARGET_PANE_USAGE
-		 " [shell-command [argument ...]]",
+	.args = { "bc:de:fF:hIkl:m:p:PR:s:S:t:vZ", 0, -1, NULL },
+	.usage = "[-bdefhIklPvZ] [-c start-directory] [-e environment] "
+		 "[-F format] [-l size] [-m message] [-p percentage] "
+	         "[-s style] [-S active-border-style] "
+	         "[-R inactive-border-style] " CMD_TARGET_PANE_USAGE " "
+	         "[shell-command [argument ...]]",
 
 	.target = { 't', CMD_FIND_PANE, 0 },
 
@@ -66,7 +84,7 @@ cmd_split_window_exec(struct cmd *self, struct cmdq_item *item)
 	struct layout_cell	*lc;
 	struct cmd_find_state	 fs;
 	int			 size, flags, input;
-	const char		*template;
+	const char		*template, *style;
 	char			*cause = NULL, *cp;
 	struct args_value	*av;
 	u_int			 count = args_count(args), curval = 0;
@@ -155,6 +173,43 @@ cmd_split_window_exec(struct cmd *self, struct cmdq_item *item)
 			cmd_free_argv(sc.argc, sc.argv);
 		environ_free(sc.environ);
 		return (CMD_RETURN_ERROR);
+	}
+
+	style = args_get(args, 's');
+	if (style != NULL) {
+		if (options_set_string(new_wp->options, "window-style", 0,
+		    "%s", style) == NULL) {
+			cmdq_error(item, "bad style: %s", style);
+			return (CMD_RETURN_ERROR);
+		}
+		options_set_string(new_wp->options, "window-active-style", 0,
+		    "%s", style);
+		new_wp->flags |= (PANE_REDRAW|PANE_STYLECHANGED
+		    |PANE_THEMECHANGED);
+	}
+	style = args_get(args, 'S');
+	if (style != NULL) {
+		if (options_set_string(new_wp->options,
+		    "pane-active-border-style", 0, "%s", style) == NULL) {
+			cmdq_error(item, "bad active border style: %s", style);
+			return (CMD_RETURN_ERROR);
+		}
+	}
+	style = args_get(args, 'R');
+	if (style != NULL) {
+		if (options_set_string(new_wp->options, "pane-border-style", 0,
+		    "%s", style) == NULL) {
+			cmdq_error(item, "bad inactive border style: %s",
+			    style);
+			return (CMD_RETURN_ERROR);
+		}
+	}
+	if (args_has(args, 'k') || args_has(args, 'm')) {
+		options_set_number(new_wp->options, "remain-on-exit", 3);
+		if (args_has(args, 'm'))
+			options_set_string(new_wp->options,
+				"remain-on-exit-format",
+				0, "%s", args_get(args, 'm'));
 	}
 	if (input) {
 		switch (window_pane_start_input(new_wp, item, &cause)) {

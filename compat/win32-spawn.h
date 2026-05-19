@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -30,6 +30,7 @@ struct win32_spawn_options {
 	const char		*cwd;
 	const char *const	*environment;
 	int			 environment_count;
+	int			 discard_stdout;
 	unsigned short		 columns;
 	unsigned short		 rows;
 };
@@ -38,6 +39,20 @@ int	win32_spawn_pty(const struct win32_spawn_options *, struct win32_pty *,
 	    uintptr_t *);
 int	win32_spawn_process(const struct win32_spawn_options *,
 	    struct win32_process *, uintptr_t *, int);
+
+/*
+ * String helpers shared by job.c and spawn.c. They were previously
+ * copy-pasted under different `<file>_win32_*` prefixes; consolidating
+ * them here means future fixes (e.g. UNC normalisation, PATH_MAX limit
+ * tuning) only need to be applied once.
+ *
+ * make_environment() is intentionally NOT shared because it depends on
+ * tmux's `struct environ`; the compat layer must not pull in tmux.h.
+ */
+
+int	  win32_spawn_cwd_is_unc(const char *cwd);
+int	  win32_spawn_cwd_is_process_supported(const char *cwd);
+char	 *win32_spawn_cmd_pushd(const char *cwd, const char *cmd);
 
 #endif
 

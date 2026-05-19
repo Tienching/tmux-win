@@ -151,7 +151,8 @@ path_is_absolute(const char *path)
 		return (0);
 	if (*path == '/' || *path == '\\')
 		return (1);
-	if (isalpha((u_char)path[0]) && path[1] == ':')
+	if (isalpha((u_char)path[0]) && path[1] == ':' &&
+	    (path[2] == '/' || path[2] == '\\'))
 		return (1);
 	return (0);
 #else

@@ -48,17 +48,24 @@ function Write-ProbeFiles {
 struct timeval;
 struct bufferevent;
 typedef intptr_t evutil_socket_t;
-typedef void (*event_callback_fn)(int, short, void *);
+typedef void (*event_callback_fn)(evutil_socket_t, short, void *);
 typedef void (*event_log_cb)(int, const char *);
 typedef void (*bufferevent_data_cb)(struct bufferevent *, void *);
 typedef void (*bufferevent_event_cb)(struct bufferevent *, short, void *);
 struct event_base { int dummy; };
 struct event { int dummy; };
 struct evbuffer { unsigned char *data; size_t len; };
-struct bufferevent { struct evbuffer *input; struct evbuffer *output; };
+struct bufferevent {
+	struct event ev_read;
+	struct event ev_write;
+	struct evbuffer *input;
+	struct evbuffer *output;
+	short enabled;
+};
 struct event_base *event_init(void);
 void event_set_log_callback(event_log_cb);
 void event_set(struct event *, int, short, event_callback_fn, void *);
+int event_base_set(struct event_base *, struct event *);
 int event_add(struct event *, const struct timeval *);
 void event_active(struct event *, int, short);
 const char *event_get_version(void);
@@ -86,6 +93,9 @@ int evbuffer_add_printf(struct evbuffer *, const char *, ...);
 int evbuffer_add_vprintf(struct evbuffer *, const char *, va_list);
 int evbuffer_read(struct evbuffer *, int, int);
 int evbuffer_write(struct evbuffer *, int);
+int evbuffer_write_atmost(struct evbuffer *, int, ssize_t);
+int evbuffer_freeze(struct evbuffer *, int);
+int evbuffer_unfreeze(struct evbuffer *, int);
 struct bufferevent *bufferevent_new(evutil_socket_t, bufferevent_data_cb,
     bufferevent_data_cb, bufferevent_event_cb, void *);
 int bufferevent_enable(struct bufferevent *, short);
@@ -99,6 +109,7 @@ void bufferevent_free(struct bufferevent *);
 #define EV_TIMEOUT 0x04
 #define EV_PERSIST 0x10
 #define EVLOOP_ONCE 0x01
+#define EVBUFFER_ERROR 0x20
 #define EVBUFFER_EOL_LF 1
 #define EVBUFFER_LENGTH(b) evbuffer_get_length(b)
 #define EVBUFFER_DATA(b) ((b)->data)
@@ -115,6 +126,8 @@ void event_set_log_callback(event_log_cb cb) { (void)cb; }
 struct event_base *event_init(void) { return calloc(1, sizeof(struct event_base)); }
 void event_set(struct event *e, int fd, short events, event_callback_fn cb, void *arg)
 { (void)e; (void)fd; (void)events; (void)cb; (void)arg; }
+int event_base_set(struct event_base *base, struct event *e)
+{ (void)base; (void)e; return 0; }
 int event_add(struct event *e, const struct timeval *tv)
 { (void)e; (void)tv; return 0; }
 void event_active(struct event *e, int events, short ncalls)
@@ -159,6 +172,12 @@ int evbuffer_read(struct evbuffer *b, int fd, int howmuch)
 { (void)b; (void)fd; (void)howmuch; return 0; }
 int evbuffer_write(struct evbuffer *b, int fd)
 { (void)b; (void)fd; return 0; }
+int evbuffer_write_atmost(struct evbuffer *b, int fd, ssize_t howmuch)
+{ (void)howmuch; return evbuffer_write(b, fd); }
+int evbuffer_freeze(struct evbuffer *b, int at_front)
+{ (void)b; (void)at_front; return 0; }
+int evbuffer_unfreeze(struct evbuffer *b, int at_front)
+{ (void)b; (void)at_front; return 0; }
 struct bufferevent *bufferevent_new(evutil_socket_t fd, bufferevent_data_cb rcb,
     bufferevent_data_cb wcb, bufferevent_event_cb ecb, void *arg)
 {
@@ -915,10 +934,8 @@ try {
 		"compat/strnlen.c", "compat/strsep.c", "compat/strtonum.c",
 		"compat/unvis.c", "compat/vis.c"
 	)
-	if ($UseSystemLibevent) {
-		$generic = $generic | Where-Object {
-			$_ -ne "compat/clock_gettime.c"
-		}
+	$generic = $generic | Where-Object {
+		$_ -ne "compat/clock_gettime.c"
 	}
 	foreach ($source in $generic) {
 		$object = Convert-ToObjectName $source "generic_"

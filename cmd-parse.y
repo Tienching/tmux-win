@@ -102,6 +102,15 @@ static void	 cmd_parse_build_commands(struct cmd_parse_commands *,
 static void	 cmd_parse_print_commands(struct cmd_parse_input *,
 		     struct cmd_list *);
 
+#ifdef _WIN32
+/*
+ * <windows.h> (pulled in transitively by Windows compat headers) defines an
+ * ERROR macro that collides with the yacc %token name below. Drop the macro
+ * here so the token symbol survives; tmux does not use the macro itself.
+ */
+#undef ERROR
+#endif
+
 %}
 
 %union
@@ -118,7 +127,7 @@ static void	 cmd_parse_print_commands(struct cmd_parse_input *,
 	struct cmd_parse_command		 *command;
 }
 
-%token PARSE_ERROR
+%token ERROR
 %token HIDDEN
 %token IF
 %token ELSE
@@ -1390,7 +1399,7 @@ yylex(void)
 			if (condition && next == '{') {
 				yylval.token = yylex_format();
 				if (yylval.token == NULL)
-					return (PARSE_ERROR);
+					return (ERROR);
 				return (FORMAT);
 			}
 			while (next != '\n' && next != EOF)
@@ -1450,7 +1459,7 @@ yylex(void)
 			free(expanded);
 #endif
 			free(yylval.token);
-			return (PARSE_ERROR);
+			return (ERROR);
 		}
 
 		/*
@@ -1458,7 +1467,7 @@ yylex(void)
 		 */
 		token = yylex_token(ch);
 		if (token == NULL)
-			return (PARSE_ERROR);
+			return (ERROR);
 		yylval.token = token;
 
 		if (strchr(token, '=') != NULL && yylex_is_var(*token, 1)) {

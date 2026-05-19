@@ -2109,6 +2109,14 @@ format_cb_pane_dead(struct format_tree *ft)
 	struct window_pane	*wp = ft->wp;
 
 	if (wp != NULL) {
+#ifdef _WIN32
+		if (wp->win32_pty != NULL) {
+			if ((wp->flags & PANE_EXITED) &&
+			    (wp->flags & PANE_STATUSREADY))
+				return (xstrdup("1"));
+			return (xstrdup("0"));
+		}
+#endif
 		if (wp->fd == -1 && (wp->flags & PANE_STATUSREADY))
 			return (xstrdup("1"));
 		return (xstrdup("0"));
