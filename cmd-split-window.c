@@ -35,6 +35,7 @@
 static enum cmd_retval	cmd_split_window_exec(struct cmd *, struct cmdq_item *);
 
 const struct cmd_entry cmd_new_pane_entry = {
+
 	.name = "new-pane",
 	.alias = "newp",
 
@@ -107,6 +108,7 @@ cmd_split_window_exec(struct cmd *self, struct cmdq_item *item)
 	struct cmd_find_state	 fs;
 	int			 flags, input;
 	const char		*template, *style;
+
 	char			*cause = NULL, *cp;
 	struct args_value	*av;
 	u_int			 count = args_count(args);
@@ -195,8 +197,8 @@ cmd_split_window_exec(struct cmd *self, struct cmdq_item *item)
 				"remain-on-exit-format",
 				0, "%s", args_get(args, 'm'));
 	}
-
 	if (input) {
+
 		switch (window_pane_start_input(new_wp, item, &cause)) {
 		case -1:
 			server_client_remove_pane(new_wp);

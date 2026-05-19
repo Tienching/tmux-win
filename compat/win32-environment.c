@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -38,8 +38,31 @@ win32_environment_cmp(const void *a0, const void *b0)
 {
 	const wchar_t *const	*a = a0;
 	const wchar_t *const	*b = b0;
+	int			 r;
 
-	return (_wcsicmp(*a, *b));
+	/*
+	 * Use CompareStringOrdinal with NORM_IGNORECASE rather than
+	 * _wcsicmp(): _wcsicmp is locale-aware (LC_CTYPE) and produces
+	 * surprising results in locales such as Turkish where 'i'/'I' do
+	 * not pair with 'I'/'i'. Windows' CreateProcessW expects environment
+	 * blocks to be sorted in a culture-invariant, case-insensitive order
+	 * regardless of the user's locale.
+	 *
+	 * CompareStringOrdinal returns CSTR_{LESS,EQUAL,GREATER}_THAN; map
+	 * those to the qsort()-style -1/0/+1 contract.
+	 */
+	r = CompareStringOrdinal(*a, -1, *b, -1, TRUE);
+	switch (r) {
+	case CSTR_LESS_THAN:
+		return (-1);
+	case CSTR_GREATER_THAN:
+		return (1);
+	case CSTR_EQUAL:
+		return (0);
+	default:
+		/* Fall back if the API rejects one of the inputs. */
+		return (_wcsicmp(*a, *b));
+	}
 }
 
 wchar_t *

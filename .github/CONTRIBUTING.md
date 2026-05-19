@@ -5,17 +5,16 @@ Before opening an issue, please ensure that:
 - Your problem is a specific problem or question or suggestion, not a general
   complaint.
 
-- `$TERM` inside tmux is screen, screen-256color, tmux or tmux-256color. Check
-  by running `echo $TERM` inside tmux.
+- You are reporting a Windows-native tmux issue for this repository:
+  `https://github.com/Tienching/tmux-win`.
 
-- You can reproduce the problem with the latest tmux release, or a build from
-  Git master.
+- You can reproduce the problem with the latest `tmux-win` build from this
+  repository.
 
-- Your question or issue is not covered [in the
-  manual](https://man.openbsd.org/tmux.1) (run `man tmux`).
+- Your question or issue is not covered in `README`, `windows/VERIFY.md`,
+  `windows/PORTING.md`, or the local `tmux.1` manpage.
 
-- Your problem is not mentioned in [the CHANGES
-  file](https://raw.githubusercontent.com/tmux/tmux/master/CHANGES).
+- Your problem is not mentioned in the local `CHANGES` file.
 
 - Nobody else has opened the same issue recently.
 
@@ -23,19 +22,23 @@ Before opening an issue, please ensure that:
 
 Please include the output of:
 
-~~~bash
-uname -sp && tmux -V && echo $TERM
+~~~powershell
+.\tmux.exe -V
+$PSVersionTable.PSVersion
+[System.Environment]::OSVersion.VersionString
 ~~~
 
 Also include:
 
-- Your platform (Linux, macOS, or whatever).
+- Your Windows version and terminal host, such as Windows Terminal, conhost,
+  PowerShell, cmd, or another shell.
 
 - A brief description of the problem with steps to reproduce.
 
 - A minimal tmux config, if you can't reproduce without a config.
 
-- Your terminal, and `$TERM` inside and outside of tmux.
+- The exact `tmux.exe` path under test. If you use a portable package, include
+  whether it came from `dist\tmux-win32-portable`.
 
 - Logs from tmux (see below). Please attach logs to the issue directly rather
   than using a download site or pastebin. Put in a zip file if necessary.
@@ -46,9 +49,9 @@ Also include:
 
 Run a separate tmux server with `-f/dev/null` to skip loading `.tmux.conf`:
 
-~~~bash
-tmux -Ltest kill-server
-tmux -Ltest -f/dev/null new
+~~~powershell
+.\tmux.exe -Ltest kill-server
+.\tmux.exe -Ltest -f/dev/null new
 ~~~
 
 ## How do I get logs from tmux?
@@ -56,16 +59,16 @@ tmux -Ltest -f/dev/null new
 Add `-vv` to tmux to create three log files in the current directory. If you can
 reproduce without a configuration file:
 
-~~~bash
-tmux -Ltest kill-server
-tmux -vv -Ltest -f/dev/null new
+~~~powershell
+.\tmux.exe -Ltest kill-server
+.\tmux.exe -vv -Ltest -f/dev/null new
 ~~~
 
 Or if you need your configuration:
 
-~~~base
-tmux kill-server
-tmux -vv new
+~~~powershell
+.\tmux.exe kill-server
+.\tmux.exe -vv new
 ~~~
 
 The log files are:

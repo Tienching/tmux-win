@@ -20,7 +20,7 @@
 #define TMUX_PROTOCOL_H
 
 /* Protocol version. */
-#define PROTOCOL_VERSION 9
+#define PROTOCOL_VERSION 8
 
 /* Message types. */
 enum msgtype {
@@ -59,7 +59,9 @@ enum msgtype {
 	MSG_WAKEUP,
 	MSG_EXEC,
 	MSG_FLAGS,
+#ifdef _WIN32
 	MSG_STDIN,
+#endif
 
 	MSG_READ_OPEN = 300,
 	MSG_READ,
@@ -80,10 +82,17 @@ struct msg_command {
 	int	argc;
 }; /* followed by packed argv */
 
+#ifdef _WIN32
+/*
+ * Windows-only resize message payload. The POSIX wire format keeps MSG_RESIZE
+ * payload-less; this struct lets the Windows client report the conhost size
+ * directly to the server because there is no SIGWINCH equivalent.
+ */
 struct msg_resize {
 	uint32_t	sx;
 	uint32_t	sy;
 };
+#endif
 
 struct msg_read_open {
 	int	stream;

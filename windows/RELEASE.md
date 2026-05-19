@@ -251,7 +251,7 @@ artifact bundle without claiming publication readiness.
 
 - Obtain and configure a production trusted code-signing certificate.
 - Decide whether the official installer format is signed MSIX, MSI, or both.
-- Wire signed artifact publication into the upstream release flow.
+- Wire signed artifact publication into the tmux-win release flow.
 - Produce and record a green hosted Windows CI run for the release commit.
 - Produce final release artifacts from a clean committed source tree.
 - Attach Linux surface and focused behavior parity JSON to release records when

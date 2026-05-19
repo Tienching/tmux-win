@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -25,7 +25,9 @@
 
 #include <windows.h>
 
+#include <ctype.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -34,6 +36,60 @@
 #include "win32-environment.h"
 #include "win32-process.h"
 #include "win32-spawn.h"
+
+/*
+ * Tiny CWD string helpers. These were previously duplicated as
+ * `job_win32_*` and `spawn_win32_*` static helpers in job.c and
+ * spawn.c; they live here so the UNC / long-path / pushd policy stays
+ * in one place.
+ *
+ * NOTE: These helpers intentionally use plain C runtime calls
+ * (no xasprintf) so they remain usable from the compat layer without
+ * pulling in tmux.h.
+ */
+
+int
+win32_spawn_cwd_is_unc(const char *cwd)
+{
+	return (cwd != NULL && cwd[0] == '\\' && cwd[1] == '\\' &&
+	    strncmp(cwd, "\\\\?\\", 4) != 0);
+}
+
+int
+win32_spawn_cwd_is_process_supported(const char *cwd)
+{
+	if (cwd == NULL)
+		return (0);
+	if (isalpha((unsigned char)cwd[0]) && cwd[1] == ':' &&
+	    (cwd[2] == '\\' || cwd[2] == '/') && strlen(cwd) >= MAX_PATH)
+		return (0);
+	return (1);
+}
+
+char *
+win32_spawn_cmd_pushd(const char *cwd, const char *cmd)
+{
+	char	*new_cmd;
+	int	 needed;
+
+	if (cwd == NULL)
+		return (NULL);
+	if (cmd == NULL)
+		needed = _scprintf("pushd \"%s\"", cwd);
+	else
+		needed = _scprintf("pushd \"%s\" && %s", cwd, cmd);
+	if (needed < 0)
+		abort();
+	new_cmd = malloc((size_t)needed + 1);
+	if (new_cmd == NULL)
+		abort();
+	if (cmd == NULL)
+		snprintf(new_cmd, (size_t)needed + 1, "pushd \"%s\"", cwd);
+	else
+		snprintf(new_cmd, (size_t)needed + 1,
+		    "pushd \"%s\" && %s", cwd, cmd);
+	return (new_cmd);
+}
 
 int
 win32_spawn_pty(const struct win32_spawn_options *options,
@@ -121,6 +177,7 @@ win32_spawn_process(const struct win32_spawn_options *options,
 	process_options.cwd = cwd;
 	process_options.environment = environment;
 	process_options.show_stderr = show_stderr;
+	process_options.discard_stdout = options->discard_stdout;
 
 	retval = win32_process_spawn(process, &process_options, master_socket);
 	free(command);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -122,6 +122,8 @@ win32_process_socket_to_stdin(LPVOID data)
 			break;
 	}
 	win32_process_close_handle(&process->input);
+	if (process->bridge_socket != (uintptr_t)INVALID_SOCKET)
+		win32_socket_shutdown_read(process->bridge_socket);
 	return (0);
 }
 
@@ -181,11 +183,16 @@ win32_process_spawn(struct win32_process *process,
 	HANDLE			 stdin_read = NULL, stdin_write = NULL;
 	HANDLE			 stdout_read = NULL, stdout_write = NULL;
 	HANDLE			 stderr_write = NULL, job = NULL;
-	STARTUPINFOW		 startup;
+	STARTUPINFOEXW		 startup;
 	PROCESS_INFORMATION	 pi;
+	SIZE_T			 attributes_size = 0;
+	LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
+	HANDLE			 inherit_handles[3];
 	uintptr_t		 sockets[2];
 	wchar_t			*command;
-	DWORD			 flags = CREATE_SUSPENDED|CREATE_NO_WINDOW;
+	DWORD			 flags = EXTENDED_STARTUPINFO_PRESENT |
+	    CREATE_SUSPENDED|CREATE_NO_WINDOW;
+	int			 attributes_initialized = 0;
 
 	if (process == NULL || master_socket == NULL || options == NULL ||
 	    options->command == NULL || *options->command == L'\0') {
@@ -205,11 +212,21 @@ win32_process_spawn(struct win32_process *process,
 	sa.bInheritHandle = TRUE;
 	if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0))
 		goto fail;
-	if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
-		goto fail;
+	if (options->discard_stdout) {
+		stdout_write = CreateFileW(L"NUL", GENERIC_WRITE,
+		    FILE_SHARE_READ|FILE_SHARE_WRITE, &sa, OPEN_EXISTING,
+		    FILE_ATTRIBUTE_NORMAL, NULL);
+		if (stdout_write == INVALID_HANDLE_VALUE) {
+			stdout_write = NULL;
+			goto fail;
+		}
+	} else {
+		if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0))
+			goto fail;
+		if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0))
+			goto fail;
+	}
 	if (!SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0))
-		goto fail;
-	if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0))
 		goto fail;
 
 	if (options->show_stderr) {
@@ -229,6 +246,24 @@ win32_process_spawn(struct win32_process *process,
 	if (win32_process_make_job(&job) != 0)
 		goto fail;
 
+	inherit_handles[0] = stdin_read;
+	inherit_handles[1] = stdout_write;
+	inherit_handles[2] = stderr_write;
+	InitializeProcThreadAttributeList(NULL, 1, 0, &attributes_size);
+	attributes = HeapAlloc(GetProcessHeap(), 0, attributes_size);
+	if (attributes == NULL) {
+		SetLastError(ERROR_OUTOFMEMORY);
+		goto fail;
+	}
+	if (!InitializeProcThreadAttributeList(attributes, 1, 0,
+	    &attributes_size))
+		goto fail;
+	attributes_initialized = 1;
+	if (!UpdateProcThreadAttribute(attributes, 0,
+	    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit_handles,
+	    sizeof inherit_handles, NULL, NULL))
+		goto fail;
+
 	command = _wcsdup(options->command);
 	if (command == NULL) {
 		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
@@ -236,16 +271,18 @@ win32_process_spawn(struct win32_process *process,
 	}
 
 	memset(&startup, 0, sizeof startup);
-	startup.cb = sizeof startup;
-	startup.dwFlags = STARTF_USESTDHANDLES;
-	startup.hStdInput = stdin_read;
-	startup.hStdOutput = stdout_write;
-	startup.hStdError = stderr_write;
+	startup.StartupInfo.cb = sizeof startup;
+	startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+	startup.StartupInfo.hStdInput = stdin_read;
+	startup.StartupInfo.hStdOutput = stdout_write;
+	startup.StartupInfo.hStdError = stderr_write;
+	startup.lpAttributeList = attributes;
 	if (options->environment != NULL)
 		flags |= CREATE_UNICODE_ENVIRONMENT;
 
 	if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, flags,
-	    (LPVOID)options->environment, options->cwd, &startup, &pi)) {
+	    (LPVOID)options->environment, options->cwd, &startup.StartupInfo,
+	    &pi)) {
 		free(command);
 		goto fail;
 	}
@@ -280,10 +317,15 @@ win32_process_spawn(struct win32_process *process,
 	    win32_process_socket_to_stdin, process, 0, NULL);
 	if (process->input_thread == NULL)
 		goto fail;
-	process->output_thread = CreateThread(NULL, 0,
-	    win32_process_stdout_to_socket, process, 0, NULL);
-	if (process->output_thread == NULL)
-		goto fail;
+	if (process->output != NULL) {
+		process->output_thread = CreateThread(NULL, 0,
+		    win32_process_stdout_to_socket, process, 0, NULL);
+		if (process->output_thread == NULL)
+			goto fail;
+	}
+
+	DeleteProcThreadAttributeList(attributes);
+	HeapFree(GetProcessHeap(), 0, attributes);
 
 	*master_socket = sockets[0];
 	return (0);
@@ -295,6 +337,11 @@ fail:
 		CloseHandle(pi.hThread);
 	if (pi.hProcess != NULL)
 		CloseHandle(pi.hProcess);
+	if (attributes != NULL) {
+		if (attributes_initialized)
+			DeleteProcThreadAttributeList(attributes);
+		HeapFree(GetProcessHeap(), 0, attributes);
+	}
 	if (stdin_read != NULL)
 		CloseHandle(stdin_read);
 	if (stdin_write != NULL)
@@ -386,11 +433,12 @@ win32_process_close(struct win32_process *process)
 	socket = process->bridge_socket;
 	if (socket != (uintptr_t)INVALID_SOCKET)
 		win32_socket_shutdown(socket, 0);
-	win32_process_close_handle(&process->input);
-	win32_process_close_handle(&process->output);
-	win32_process_close_handle(&process->thread);
 	win32_process_close_handle(&process->process);
 	win32_process_close_handle(&process->job);
+	if (process->input_thread != NULL)
+		CancelSynchronousIo((HANDLE)process->input_thread);
+	if (process->output_thread != NULL)
+		CancelSynchronousIo((HANDLE)process->output_thread);
 	if (process->input_thread != NULL) {
 		WaitForSingleObject((HANDLE)process->input_thread, 1000);
 		CloseHandle((HANDLE)process->input_thread);
@@ -399,6 +447,9 @@ win32_process_close(struct win32_process *process)
 		WaitForSingleObject((HANDLE)process->output_thread, 1000);
 		CloseHandle((HANDLE)process->output_thread);
 	}
+	win32_process_close_handle(&process->input);
+	win32_process_close_handle(&process->output);
+	win32_process_close_handle(&process->thread);
 	if (socket != (uintptr_t)INVALID_SOCKET)
 		win32_socket_close(socket);
 	memset(process, 0, sizeof *process);
@@ -411,6 +462,61 @@ win32_process_id(const struct win32_process *process)
 	if (process == NULL)
 		return (0);
 	return (process->process_id);
+}
+
+int
+win32_native_exit_to_status(unsigned long native)
+{
+	int	signo;
+
+	/*
+	 * Most Windows processes exit with a small (0..255) value through
+	 * ExitProcess(); leave room for tools that explicitly use values up
+	 * to 0xFF and synthesize a POSIX-shaped (code << 8) status, the same
+	 * convention macOS/Linux waitpid() uses.
+	 */
+	if (native <= 0xff)
+		return ((int)((native & 0xff) << 8));
+
+	/*
+	 * NTSTATUS-shaped failures (high bit or DBG_* range) get mapped to
+	 * the closest POSIX signal so log lines / ${pane_dead_signal} stay
+	 * meaningful. Everything not recognised collapses to SIGTERM (15)
+	 * rather than being silently mis-decoded as an exit code.
+	 */
+	switch (native) {
+	case 0xC0000005UL: /* STATUS_ACCESS_VIOLATION */
+	case 0xC0000094UL: /* STATUS_INTEGER_DIVIDE_BY_ZERO */
+	case 0xC0000096UL: /* STATUS_PRIVILEGED_INSTRUCTION */
+		signo = 11; /* SIGSEGV */
+		break;
+	case 0xC000001DUL: /* STATUS_ILLEGAL_INSTRUCTION */
+		signo = 4;  /* SIGILL */
+		break;
+	case 0xC000013AUL: /* STATUS_CONTROL_C_EXIT */
+	case 0x40010005UL: /* DBG_CONTROL_C */
+		signo = 2;  /* SIGINT */
+		break;
+	case 0xC0000142UL: /* STATUS_DLL_INIT_FAILED */
+	case 0xC0000409UL: /* STATUS_STACK_BUFFER_OVERRUN / __fastfail */
+		signo = 6;  /* SIGABRT */
+		break;
+	case 0x40010004UL: /* DBG_TERMINATE_THREAD */
+	case 0x40010003UL: /* DBG_TERMINATE_PROCESS */
+	case 0xC000013BUL: /* STATUS_LOCAL_DISCONNECT */
+		signo = 15; /* SIGTERM */
+		break;
+	default:
+		signo = 15;
+		break;
+	}
+
+	/*
+	 * Encode as (signo & 0x7f) so WIFSIGNALED((status)) is true and
+	 * WTERMSIG((status)) returns signo. WIFEXITED is intentionally
+	 * false for these cases.
+	 */
+	return (signo & 0x7f);
 }
 
 #endif

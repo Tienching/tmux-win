@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -165,7 +165,7 @@ win32_pty_socket_to_conpty(LPVOID data)
 	}
 
 out:
-	win32_socket_shutdown(pty->bridge_socket, 0);
+	win32_socket_shutdown_read(pty->bridge_socket);
 	return (0);
 }
 
@@ -192,7 +192,7 @@ win32_pty_conpty_to_socket(LPVOID data)
 	}
 
 out:
-	win32_socket_shutdown(pty->bridge_socket, 0);
+	win32_socket_shutdown(pty->bridge_socket, 1);
 	return (0);
 }
 
@@ -319,18 +319,14 @@ void
 win32_pty_close(struct win32_pty *pty)
 {
 	uintptr_t	socket;
-	DWORD		result;
 
 	if (pty == NULL)
 		return;
 
 	socket = pty->bridge_socket;
 	win32_shutdown_socket(socket);
-	if (pty->conpty.process != NULL) {
-		result = WaitForSingleObject((HANDLE)pty->conpty.process, 1000);
-		if (result == WAIT_TIMEOUT)
-			pty->conpty.pseudoconsole = NULL;
-	}
+	if (pty->conpty.process != NULL)
+		WaitForSingleObject((HANDLE)pty->conpty.process, 1000);
 	win32_conpty_close(&pty->conpty);
 	if (pty->input_thread != NULL) {
 		WaitForSingleObject((HANDLE)pty->input_thread, 1000);

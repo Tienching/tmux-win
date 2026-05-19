@@ -43,7 +43,14 @@ fi
 
 # Set up the compiler in two different ways and say yes we may want to install.
 AC_PROG_CC
-AC_PROG_CXX
+# C++ compiler is only required by the Windows port (compat/win32-regex.cc).
+# Limit AC_PROG_CXX to mingw/windows hosts so the POSIX build does not require
+# g++ on minimal BSD/Solaris/Linux containers.
+case "$host_os" in
+	*mingw*|*windows*)
+		AC_PROG_CXX
+		;;
+esac
 AM_PROG_CC_C_O
 m4_version_prereq(2.70, [AC_PROG_CC], [AC_PROG_CC_C99])
 AC_PROG_CPP

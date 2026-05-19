@@ -1,7 +1,7 @@
 /* $OpenBSD$ */
 
 /*
- * Copyright (c) 2026 Nicholas Marriott <nicholas.marriott@gmail.com>
+ * Copyright (c) 2026 jonaszchen <jonaszchen@gmail.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -222,6 +222,15 @@ osdep_win32_cwd_from_string(HANDLE process, const UNICODE_STRING *string)
 	length = string->Length;
 	if (length == 0 || string->Buffer == NULL ||
 	    (length % sizeof *wide) != 0)
+		return (NULL);
+	/*
+	 * UNICODE_STRING::Length is a USHORT and string->MaximumLength is its
+	 * declared upper bound; combined with PATH-shaped data this should
+	 * never exceed a few KiB. Cap it explicitly so a malformed/hostile
+	 * remote PEB cannot make us xcalloc gigabytes.
+	 */
+	if (length > 32 * 1024 ||
+	    (string->MaximumLength != 0 && length > string->MaximumLength))
 		return (NULL);
 	wide = xcalloc((length / sizeof *wide) + 1, sizeof *wide);
 	if (!ReadProcessMemory(process, string->Buffer, wide, length, &got) ||

@@ -515,7 +515,17 @@ cmd_source_file_exec(struct cmd *self, struct cmdq_item *item)
 		    )
 			pattern = xstrdup(path);
 		else
+#ifdef _WIN32
+			/*
+			 * Use the platform-native separator on Windows so the
+			 * resulting pattern is consistent with path_is_absolute
+			 * checks elsewhere and survives round-trips through
+			 * APIs that tokenise on '\\'.
+			 */
+			xasprintf(&pattern, "%s\\%s", cwd, path);
+#else
 			xasprintf(&pattern, "%s/%s", cwd, path);
+#endif
 		log_debug("%s: %s", __func__, pattern);
 
 		if ((result = glob(pattern, 0, NULL, &g)) != 0) {

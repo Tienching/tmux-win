@@ -35,6 +35,8 @@
 #include "compat/win32-command.h"
 #include "compat/win32-socketpair.h"
 #include "compat/win32-spawn.h"
+
+#define WIN32_JOB_EXIT_GRACE_USEC 100000
 #endif
 
 /*
@@ -49,9 +51,6 @@ static struct job *job_run_win32_pty(const char *, const char *, int, char **,
 static struct job *job_run_win32_process(const char *, const char *, int, char **,
 	    struct environ *, const char *, job_update_cb, job_complete_cb,
 	    job_free_cb, void *, int);
-static int	job_win32_cwd_is_unc(const char *);
-static int	job_win32_cwd_is_process_supported(const char *);
-static char	*job_win32_cmd_pushd(const char *, const char *);
 static char	*job_win32_resolve_cwd(struct environ *, const char *);
 static int	job_win32_collect_status(struct job *);
 static void	job_win32_poll_callback(evutil_socket_t, short, void *);
@@ -85,6 +84,7 @@ struct job {
 	struct win32_pty	*win32_pty;
 	struct win32_process	*win32_process;
 	struct event		 win32_poll_event;
+	struct timeval		 win32_exit_time;
 #endif
 
 	job_update_cb		 updatecb;
@@ -104,39 +104,17 @@ static LIST_HEAD(joblist, job) all_jobs = LIST_HEAD_INITIALIZER(all_jobs);
 #endif
 
 static int
-job_win32_cwd_is_unc(const char *cwd)
-{
-	return (cwd != NULL && cwd[0] == '\\' && cwd[1] == '\\' &&
-	    strncmp(cwd, "\\\\?\\", 4) != 0);
-}
-
-static int
-job_win32_cwd_is_process_supported(const char *cwd)
-{
-	if (cwd == NULL)
-		return (0);
-	if (isalpha((u_char)cwd[0]) && cwd[1] == ':' &&
-	    (cwd[2] == '\\' || cwd[2] == '/') && strlen(cwd) >= MAX_PATH)
-		return (0);
-	return (1);
-}
-
-static char *
-job_win32_cmd_pushd(const char *cwd, const char *cmd)
-{
-	char	*new_cmd;
-
-	if (cmd == NULL)
-		xasprintf(&new_cmd, "pushd \"%s\"", cwd);
-	else
-		xasprintf(&new_cmd, "pushd \"%s\" && %s", cwd, cmd);
-	return (new_cmd);
-}
-
-static int
 job_win32_status(unsigned long exit_code)
 {
-	return ((exit_code & 0xff) << 8);
+	/*
+	 * Encode the Win32 ExitCode the same way POSIX waitpid() encodes a
+	 * status word so the existing WIFEXITED/WIFSIGNALED/WTERMSIG macros
+	 * in compat.h decode correctly. Common NTSTATUS exception codes
+	 * (0xC0000005, Ctrl-C, ...) are mapped to a POSIX signal in
+	 * win32_native_exit_to_status() rather than being silently passed
+	 * through where their low bits would collide with the signal field.
+	 */
+	return (win32_native_exit_to_status(exit_code));
 }
 
 static int
@@ -163,14 +141,15 @@ job_win32_poll_callback(__unused evutil_socket_t fd, __unused short events, void
 {
 	struct job	*job = data;
 	struct timeval	 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	struct timeval	 now, diff;
 	unsigned long	 pending;
+	int		 was_closed;
 
-	if ((job->state != JOB_RUNNING && job->state != JOB_CLOSED) ||
-	    job->event == NULL)
+	if ((job->state != JOB_RUNNING && job->state != JOB_CLOSED &&
+	    job->state != JOB_DEAD) || job->event == NULL)
 		return;
 
-	if (job->state == JOB_RUNNING &&
-	    job->win32_socket != (uintptr_t)-1 &&
+	if (job->win32_socket != (uintptr_t)-1 &&
 	    win32_socket_pending(job->win32_socket, &pending) == 0 &&
 	    pending != 0) {
 		event_active(&job->event->ev_read, EV_READ, 1);
@@ -178,7 +157,29 @@ job_win32_poll_callback(__unused evutil_socket_t fd, __unused short events, void
 		return;
 	}
 
-	if (job_win32_collect_status(job)) {
+	was_closed = (job->state == JOB_CLOSED);
+	if (job->state == JOB_RUNNING && job_win32_collect_status(job)) {
+		gettimeofday(&job->win32_exit_time, NULL);
+		evtimer_add(&job->win32_poll_event, &tv);
+		return;
+	}
+	if (was_closed && job_win32_collect_status(job)) {
+		if (job->completecb != NULL)
+			job->completecb(job);
+		job_free(job);
+		return;
+	}
+	if (job->state == JOB_DEAD) {
+		if (job->win32_exit_time.tv_sec != 0 ||
+		    job->win32_exit_time.tv_usec != 0) {
+			gettimeofday(&now, NULL);
+			timersub(&now, &job->win32_exit_time, &diff);
+			if (diff.tv_sec == 0 &&
+			    diff.tv_usec < WIN32_JOB_EXIT_GRACE_USEC) {
+				evtimer_add(&job->win32_poll_event, &tv);
+				return;
+			}
+		}
 		if (job->completecb != NULL)
 			job->completecb(job);
 		job_free(job);
@@ -223,7 +224,7 @@ job_win32_resolve_cwd(struct environ *env, const char *cwd)
 	else
 		resolved = xstrdup(cwd);
 	if (!path_is_directory(resolved) ||
-	    !job_win32_cwd_is_process_supported(resolved)) {
+	    !win32_spawn_cwd_is_process_supported(resolved)) {
 		free(resolved);
 		resolved = xstrdup(find_default_cwd());
 	}
@@ -297,12 +298,12 @@ job_run_win32_pty(const char *cmd, const char *shell, int argc, char **argv,
 	}
 	resolved_cwd = job_win32_resolve_cwd(env, cwd);
 	process_cwd = resolved_cwd;
-	if (job_win32_cwd_is_unc(resolved_cwd) && spawn_argc == 4 &&
+	if (win32_spawn_cwd_is_unc(resolved_cwd) && spawn_argc == 4 &&
 	    win32_shell_is_cmd(spawn_argv[0]) &&
 	    _stricmp(spawn_argv[1], "/d") == 0 &&
 	    (_stricmp(spawn_argv[2], "/c") == 0 ||
 	    _stricmp(spawn_argv[2], "/k") == 0)) {
-		cmd_cwd = job_win32_cmd_pushd(resolved_cwd, spawn_argv[3]);
+		cmd_cwd = win32_spawn_cmd_pushd(resolved_cwd, spawn_argv[3]);
 		shell_argv[0] = spawn_argv[0];
 		shell_argv[1] = spawn_argv[1];
 		shell_argv[2] = spawn_argv[2];
@@ -408,12 +409,12 @@ job_run_win32_process(const char *cmd, const char *shell, int argc, char **argv,
 	}
 	resolved_cwd = job_win32_resolve_cwd(env, cwd);
 	process_cwd = resolved_cwd;
-	if (job_win32_cwd_is_unc(resolved_cwd) && spawn_argc == 4 &&
+	if (win32_spawn_cwd_is_unc(resolved_cwd) && spawn_argc == 4 &&
 	    win32_shell_is_cmd(spawn_argv[0]) &&
 	    _stricmp(spawn_argv[1], "/d") == 0 &&
 	    (_stricmp(spawn_argv[2], "/c") == 0 ||
 	    _stricmp(spawn_argv[2], "/k") == 0)) {
-		cmd_cwd = job_win32_cmd_pushd(resolved_cwd, spawn_argv[3]);
+		cmd_cwd = win32_spawn_cmd_pushd(resolved_cwd, spawn_argv[3]);
 		shell_argv[0] = spawn_argv[0];
 		shell_argv[1] = spawn_argv[1];
 		shell_argv[2] = spawn_argv[2];

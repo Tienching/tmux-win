@@ -1,87 +1,246 @@
-Welcome to tmux!
+# tmux-win
 
-tmux is a terminal multiplexer: it enables a number of terminals to be created,
-accessed, and controlled from a single screen. tmux may be detached from a
-screen and continue running in the background, then later reattached.
+tmux-win is a native Windows port of tmux maintained at:
 
-This release runs on OpenBSD, FreeBSD, NetBSD, Linux, macOS and Solaris.
+	https://github.com/Tienching/tmux-win
 
-* Dependencies
+It keeps the tmux command model, configuration language, key tables, panes,
+buffers, copy mode, jobs, popups, and client/server workflow, while replacing
+the Unix-only runtime pieces with Win32 process, console, IPC, clipboard, and
+path handling.
 
-tmux depends on libevent 2.x, available from:
+This project targets functional compatibility on Windows. It does not need to
+ship on the same cadence or with the same packaging as Unix tmux; the release
+bar is that the Windows build behaves like tmux for the features supported by
+the Windows platform.
 
-	https://github.com/libevent/libevent/releases/latest
+## Status
 
-It also depends on ncurses, available from:
+The Windows port builds as a native Win32 executable and uses ConPTY for pane
+processes. The portable package is intended to run without MSYS2, Cygwin, WSL,
+or a Unix compatibility runtime. MSYS2 is only a build toolchain.
 
-	https://invisible-mirror.net/archives/ncurses/
+Current Windows coverage includes:
 
-To build tmux, a C compiler (for example gcc or clang), make, pkg-config and a
-suitable yacc (yacc or bison) are needed.
+- native server/client startup and command clients;
+- detached sessions, windows, panes, layouts, zoom, resize, split, join, break,
+  swap, rotate, respawn, and pane destruction;
+- ConPTY-backed shell panes and command panes;
+- run-shell, if-shell, pipe-pane, popup jobs, and process cleanup;
+- copy mode, buffers, paste-buffer, save-buffer, load-buffer, and copy-pipe;
+- Windows paths, current pane path discovery, and default config discovery;
+- loopback IPC with endpoint-token authentication;
+- Windows clipboard integration;
+- command, option, and key-binding audits against Linux tmux when WSL and Linux
+  tmux are available.
 
-* Installation
+Detailed Windows notes are in:
 
-To build and install tmux from a release tarball, use:
+- `windows/PORTING.md`
+- `windows/VERIFY.md`
+- `windows/RELEASE.md`
+- `windows/PARITY-AUDIT.md`
 
-	$ ./configure && make
-	$ sudo make install
+## Requirements
 
-tmux can use the utempter library to update utmp(5), if it is installed - run
-configure with --enable-utempter to enable this.
+Runtime:
 
-To get and build the latest from version control - note that this requires
-autoconf, automake and pkg-config:
+- Windows 10 version 1809 or newer, or Windows 11;
+- a console host with ConPTY support, such as Windows Terminal or the modern
+  Windows console;
+- PowerShell, cmd, or another Windows shell to launch `tmux.exe`.
 
-	$ git clone https://github.com/tmux/tmux.git
-	$ cd tmux
-	$ sh autogen.sh
-	$ ./configure && make
-	$ sudo make install
+Build:
 
-* Contributing
+- PowerShell 5 or newer;
+- MSYS2 MinGW64 or UCRT64 GCC/G++;
+- MSYS2 bison;
+- MSYS2 pkgconf and libevent;
+- MSYS2 binutils for portable package dependency collection.
 
-Bug reports, feature suggestions and especially code contributions are most
-welcome. Please send by email to:
+A common local MSYS2 setup, run from an MSYS2 shell, is:
 
-	tmux-users@googlegroups.com
+```powershell
+pacman -S --needed `
+  mingw-w64-x86_64-gcc `
+  mingw-w64-x86_64-libevent `
+  mingw-w64-x86_64-pkgconf `
+  mingw-w64-x86_64-binutils `
+  bison
+```
 
-Or open a GitHub issue or pull request.
+If you use UCRT64, install the matching `mingw-w64-ucrt-x86_64-*` packages and
+pass the matching compiler paths through `-CC` and `-CXX` when needed.
 
-* Documentation
+## Getting the Source
 
-For documentation on using tmux, see the tmux.1 manpage. View it from the
-source tree with:
+Clone this project:
 
-	$ nroff -mdoc tmux.1|less
+```powershell
+git clone git@github.com:Tienching/tmux-win.git
+cd tmux-win
+```
 
-A small example configuration is in example_tmux.conf.
+HTTPS clone:
 
-Other documentation is available in the wiki:
+```powershell
+git clone https://github.com/Tienching/tmux-win.git
+cd tmux-win
+```
 
-	https://github.com/tmux/tmux/wiki
+## Using a Portable Build
 
-Also see the tmux FAQ at:
+Unpack `tmux-win32-portable.zip` and run:
 
-	https://github.com/tmux/tmux/wiki/FAQ
+```powershell
+.\tmux.exe -V
+.\tmux.exe new-session
+```
 
-A bash(1) completion file is at:
+From a source checkout, install the portable package for the current Windows
+user with:
 
-	https://github.com/scop/bash-completion/blob/main/completions/tmux
+```powershell
+.\windows\install-portable.ps1 `
+  -ZipPath .\dist\tmux-win32-portable.zip `
+  -AddToUserPath `
+  -Verify
+```
 
-For debugging, run tmux with -v and -vv to generate server and client log files
-in the current directory.
+The default install location is `%LOCALAPPDATA%\tmux`. The installer writes an
+install marker and has a matching uninstall mode:
 
-* Support
+```powershell
+.\windows\install-portable.ps1 -Uninstall
+```
 
-The tmux mailing list for general discussion and bug reports is:
+## Building from Source
 
-	https://groups.google.com/forum/#!forum/tmux-users
+From a PowerShell prompt at the repository root:
 
-Subscribe by sending an email to:
+```powershell
+.\windows\probe-mingw.ps1 -Yacc C:\msys64\usr\bin\bison.exe
+.\windows\build-mingw.ps1 -Yacc C:\msys64\usr\bin\bison.exe
+```
 
-	tmux-users+subscribe@googlegroups.com
+The build writes `tmux.exe` in the repository root by default.
 
-* License
+To create a portable package:
+
+```powershell
+.\windows\package-mingw.ps1 `
+  -Tmux .\tmux.exe `
+  -Output .\dist\tmux-win32-portable `
+  -ZipPath .\dist\tmux-win32-portable.zip `
+  -Clean `
+  -RunSmoke `
+  -Zip
+```
+
+## Verification
+
+Quick portable verification:
+
+```powershell
+.\windows\verify-portable.ps1 `
+  -Tmux .\dist\tmux-win32-portable\tmux.exe
+```
+
+Direct runtime smoke:
+
+```powershell
+.\windows\smoke-runtime.ps1 `
+  -Tmux .\tmux.exe `
+  -TimeoutSeconds 180
+```
+
+Packaged runtime smoke:
+
+```powershell
+.\windows\smoke-runtime.ps1 `
+  -Tmux .\dist\tmux-win32-portable\tmux.exe `
+  -TimeoutSeconds 180
+```
+
+Full local release gate:
+
+```powershell
+.\windows\release-check.ps1 `
+  -Yacc C:\msys64\usr\bin\bison.exe `
+  -SmokeTimeoutSeconds 180 `
+  -RespawnIterations 20 `
+  -IpcAclIterations 5 `
+  -JobStressIterations 20 `
+  -ClientStressIterations 5 `
+  -SignalMatrixIterations 3 `
+  -StressIterations 2 `
+  -SoakSeconds 20 `
+  -ConsoleSoakSeconds 20 `
+  -ClipboardStressIterations 10 `
+  -RunConfigStress `
+  -RunVisualTerminalVerify
+```
+
+Optional Linux comparison checks need WSL and Linux tmux:
+
+```powershell
+.\windows\linux-parity-matrix.ps1 `
+  -WindowsTmux .\dist\tmux-win32-portable\tmux.exe `
+  -Output .\dist\linux-parity-matrix.json
+
+.\windows\linux-behavior-parity.ps1 `
+  -WindowsTmux .\dist\tmux-win32-portable\tmux.exe `
+  -Output .\dist\linux-behavior-parity.json
+```
+
+These checks compare the Windows binary against Linux tmux behavior and command
+surface. They are evidence for functional compatibility; they are not a
+requirement that Windows releases match Linux packaging or release timing.
+
+## Release Artifacts
+
+The release workflow produces:
+
+- `dist\tmux-win32-portable`;
+- `dist\tmux-win32-portable.zip`;
+- `dist\tmux-win32-portable.zip.sha256`;
+- `dist\release-check.json`;
+- `dist\command-surface.json`;
+- optional MSIX, signing, IPC boundary, hosted CI, source-state, Linux parity,
+  and completion-audit summaries.
+
+Use `windows/verify-release-artifacts.ps1` to cross-check an already produced
+`dist` directory before publishing.
+
+## Documentation
+
+For tmux usage documentation, see the local `tmux.1` manpage. From an MSYS2 or
+Unix-like shell:
+
+```powershell
+nroff -mdoc tmux.1 | less
+```
+
+The example configuration is in `example_tmux.conf`.
+
+For Windows-specific verification and troubleshooting, start with
+`windows/VERIFY.md`.
+
+For debugging this Windows port, run tmux with `-v` or `-vv` to generate server
+and client logs in the current directory. The Windows verification scripts also
+write JSON or text summaries under `dist`.
+
+## Contributing
+
+File issues and pull requests in this repository:
+
+	https://github.com/Tienching/tmux-win
+
+Changes should include focused Windows verification when they touch process
+lifecycle, ConPTY, IPC, clipboard, parser behavior, command surface, packaging,
+or release scripts.
+
+## License
 
 This file and the CHANGES files are licensed under the ISC license. All other
 files have a license and copyright notice at their start.
