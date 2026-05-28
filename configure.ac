@@ -43,14 +43,13 @@ fi
 
 # Set up the compiler in two different ways and say yes we may want to install.
 AC_PROG_CC
-# C++ compiler is only required by the Windows port (compat/win32-regex.cc).
-# Limit AC_PROG_CXX to mingw/windows hosts so the POSIX build does not require
-# g++ on minimal BSD/Solaris/Linux containers.
-case "$host_os" in
-	*mingw*|*windows*)
-		AC_PROG_CXX
-		;;
-esac
+# A C++ compiler is required by the Windows port (compat/win32-regex.cc).
+# automake 1.18+ requires AC_PROG_CXX to be invoked unconditionally so that
+# am__fastdepCXX is defined, even when the only C++ source is gated on
+# IS_WINDOWS. AC_PROG_CXX is benign on POSIX systems: g++ is detected if
+# present (almost always alongside gcc) but no C++ compilation actually
+# runs because the .cc source is only listed inside `if IS_WINDOWS`.
+AC_PROG_CXX
 AM_PROG_CC_C_O
 m4_version_prereq(2.70, [AC_PROG_CC], [AC_PROG_CC_C99])
 AC_PROG_CPP

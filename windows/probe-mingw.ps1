@@ -856,7 +856,8 @@ try {
 		Add-PathEntries $eventFlags.BinPaths
 		$eventMode = "system"
 	}
-	$linkLibraries += @("-lws2_32")
+	$linkLibraries += @("-lws2_32", "-ladvapi32", "-lbcrypt", "-luserenv",
+	    "-lshlwapi", "-lshell32", "-lole32", "-luuid")
 
 	Invoke-TerminalFormatProbe $common
 

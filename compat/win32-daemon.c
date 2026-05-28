@@ -22,9 +22,12 @@
 #include "win32-endpoint.h"
 #include "win32-errno.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <userenv.h>
+#include <sddl.h>
 
 /*
  * Phase 1, T-006: named pipe creation with ACL and handle-inheritance
@@ -168,6 +171,122 @@ win32d_create_server_pipes(struct win32_daemon_handle *handle,
 	}
 	handle->state = WIN32_DAEMON_STATE_LISTENING;
 	return (0);
+}
+
+/*
+ * T-008 helpers: endpoint write + reuse + stale cleanup.
+ *
+ * Once the server child is spawned, the parent persists a record at
+ * %LOCALAPPDATA%\tmux\<sid>\<sock>.endpoint so that future clients can
+ * locate the running server without scanning the named-pipe namespace.
+ *
+ * On the connect path, if the endpoint refers to a dead pid (or no pid
+ * survives OpenProcess), the file is unlinked silently so the next
+ * spawn round trip is clean.
+ */
+static void
+win32d_format_iso8601_utc(wchar_t out[WIN32_ENDPOINT_TIME_MAX])
+{
+	SYSTEMTIME	st;
+
+	GetSystemTime(&st);
+	swprintf_s(out, WIN32_ENDPOINT_TIME_MAX,
+	    L"%04u-%02u-%02uT%02u:%02u:%02uZ",
+	    (unsigned)st.wYear, (unsigned)st.wMonth, (unsigned)st.wDay,
+	    (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond);
+}
+
+static int
+win32d_current_user_sid(wchar_t out[WIN32_ENDPOINT_SID_MAX])
+{
+	HANDLE	token = NULL;
+	DWORD	needed = 0;
+	TOKEN_USER *user = NULL;
+	wchar_t	*sid_str = NULL;
+	int	rc = -1;
+
+	out[0] = L'\0';
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		goto out;
+	GetTokenInformation(token, TokenUser, NULL, 0, &needed);
+	if (needed == 0)
+		goto out;
+	user = malloc(needed);
+	if (user == NULL) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		goto out;
+	}
+	if (!GetTokenInformation(token, TokenUser, user, needed, &needed))
+		goto out;
+	if (!ConvertSidToStringSidW(user->User.Sid, &sid_str))
+		goto out;
+	if (wcslen(sid_str) >= WIN32_ENDPOINT_SID_MAX) {
+		SetLastError(ERROR_INSUFFICIENT_BUFFER);
+		goto out;
+	}
+	wcscpy_s(out, WIN32_ENDPOINT_SID_MAX, sid_str);
+	rc = 0;
+
+out:
+	if (sid_str != NULL)
+		LocalFree(sid_str);
+	free(user);
+	if (token != NULL)
+		CloseHandle(token);
+	return (rc);
+}
+
+static int
+win32d_pid_alive(DWORD pid)
+{
+	HANDLE	process;
+	DWORD	exit_code = 0;
+	int	alive = 0;
+
+	if (pid == 0)
+		return (0);
+	process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (process == NULL)
+		return (0);
+	if (GetExitCodeProcess(process, &exit_code) && exit_code == STILL_ACTIVE)
+		alive = 1;
+	CloseHandle(process);
+	return (alive);
+}
+
+static int
+win32d_write_endpoint(struct win32_daemon_handle *handle,
+    const char *socket_name)
+{
+	struct win32_endpoint_record record;
+	wchar_t			   *path = NULL;
+	int			    rc = -1;
+
+	memset(&record, 0, sizeof record);
+	if (win32_endpoint_resolve_path(socket_name, &path) != 0)
+		return (-1);
+
+	record.version = WIN32_ENDPOINT_VERSION;
+	if (win32d_current_user_sid(record.sid) != 0)
+		goto out;
+	record.pid = handle->child_pid;
+	wcscpy_s(record.pipe_ctl, WIN32_ENDPOINT_PIPE_MAX,
+	    handle->pipe_ctl_name);
+	wcscpy_s(record.pipe_evt, WIN32_ENDPOINT_PIPE_MAX,
+	    handle->pipe_evt_name);
+	win32d_format_iso8601_utc(record.started_at);
+	swprintf_s(record.tmux_version, WIN32_ENDPOINT_VERSION_STR_MAX,
+	    L"%hs", "win-port-rc1");
+
+	if (win32_endpoint_write_atomic(path, &record) != 0)
+		goto out;
+	handle->endpoint_path = path;
+	path = NULL;
+	rc = 0;
+
+out:
+	free(path);
+	return (rc);
 }
 
 /*
