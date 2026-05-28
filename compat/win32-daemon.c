@@ -24,6 +24,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <userenv.h>
 
 /*
  * Phase 1, T-006: named pipe creation with ACL and handle-inheritance
@@ -169,6 +170,244 @@ win32d_create_server_pipes(struct win32_daemon_handle *handle,
 	return (0);
 }
 
+/*
+ * T-007: CreateProcessW spawn of the detached server. The child inherits
+ * only the two named-pipe server ends via PROC_THREAD_ATTRIBUTE_HANDLE_LIST;
+ * stdio is redirected to NUL so the server never holds the client console;
+ * the working directory is forced to %SystemRoot% to avoid pinning the
+ * caller's CWD on disk.
+ *
+ * Command line: <argv[0]> --server-detached <pipe-ctl> <pipe-evt> <socket>.
+ * The endpoint path is communicated through the TMUX_ENDPOINT environment
+ * variable populated by T-008 (the spawn here only adds TMUX_PIPE_* so the
+ * child can confirm the bridge before T-008 lands). Argument quoting is
+ * handled by enclosing each argument in double quotes; pipe names contain
+ * only ASCII characters from win32_endpoint_format_pipe_names so a basic
+ * quote-and-pass approach is safe.
+ */
+static int
+win32d_build_command_line(const wchar_t *exe, const wchar_t *pipe_ctl,
+    const wchar_t *pipe_evt, const char *socket_name, wchar_t **out)
+{
+	wchar_t	*socket_w = NULL;
+	wchar_t	*line = NULL;
+	size_t	cap;
+	int	rc = -1;
+	int	n;
+
+	if (exe == NULL || pipe_ctl == NULL || pipe_evt == NULL ||
+	    socket_name == NULL || out == NULL) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return (-1);
+	}
+	*out = NULL;
+	{
+		int needed = MultiByteToWideChar(CP_UTF8, 0, socket_name, -1,
+		    NULL, 0);
+		if (needed <= 0)
+			return (-1);
+		socket_w = calloc((size_t)needed, sizeof *socket_w);
+		if (socket_w == NULL) {
+			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return (-1);
+		}
+		if (MultiByteToWideChar(CP_UTF8, 0, socket_name, -1, socket_w,
+		    needed) <= 0)
+			goto out;
+	}
+
+	cap = wcslen(exe) + wcslen(pipe_ctl) + wcslen(pipe_evt) +
+	    wcslen(socket_w) + 64;
+	line = calloc(cap, sizeof *line);
+	if (line == NULL) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		goto out;
+	}
+	n = swprintf_s(line, cap,
+	    L"\"%ls\" --server-detached \"%ls\" \"%ls\" \"%ls\"",
+	    exe, pipe_ctl, pipe_evt, socket_w);
+	if (n < 0) {
+		SetLastError(ERROR_INSUFFICIENT_BUFFER);
+		goto out;
+	}
+	*out = line;
+	line = NULL;
+	rc = 0;
+
+out:
+	free(socket_w);
+	free(line);
+	return (rc);
+}
+
+static int
+win32d_resolve_self_path(wchar_t out[MAX_PATH * 2])
+{
+	DWORD	n;
+
+	n = GetModuleFileNameW(NULL, out, MAX_PATH * 2);
+	if (n == 0 || n >= MAX_PATH * 2) {
+		if (n >= MAX_PATH * 2)
+			SetLastError(ERROR_INSUFFICIENT_BUFFER);
+		return (-1);
+	}
+	return (0);
+}
+
+static int
+win32d_open_nul(HANDLE *handle, BOOL inherit, DWORD access)
+{
+	SECURITY_ATTRIBUTES	sa;
+	HANDLE			h;
+
+	memset(&sa, 0, sizeof sa);
+	sa.nLength = sizeof sa;
+	sa.bInheritHandle = inherit;
+
+	h = CreateFileW(L"NUL", access, FILE_SHARE_READ | FILE_SHARE_WRITE,
+	    &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (h == INVALID_HANDLE_VALUE)
+		return (-1);
+	*handle = h;
+	return (0);
+}
+
+static wchar_t *
+win32d_system_root(void)
+{
+	wchar_t	*buf;
+	DWORD	n;
+
+	buf = calloc(MAX_PATH * 2, sizeof *buf);
+	if (buf == NULL) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return (NULL);
+	}
+	n = GetEnvironmentVariableW(L"SystemRoot", buf, MAX_PATH * 2);
+	if (n == 0 || n >= MAX_PATH * 2) {
+		wcscpy_s(buf, MAX_PATH * 2, L"C:\\Windows");
+	}
+	return (buf);
+}
+
+static int
+win32d_spawn_child(struct win32_daemon_handle *handle,
+    const char *socket_name)
+{
+	wchar_t			 self[MAX_PATH * 2];
+	wchar_t			*command_line = NULL;
+	wchar_t			*system_root = NULL;
+	wchar_t			*environment = NULL;
+	HANDLE			 nul_in = INVALID_HANDLE_VALUE;
+	HANDLE			 nul_out = INVALID_HANDLE_VALUE;
+	HANDLE			 nul_err = INVALID_HANDLE_VALUE;
+	HANDLE			 inherit_handles[5];
+	int			 inherit_count = 0;
+	STARTUPINFOEXW		 startup;
+	PROCESS_INFORMATION	 pi;
+	SIZE_T			 attribute_size = 0;
+	LPPROC_THREAD_ATTRIBUTE_LIST attribute_list = NULL;
+	int			 attribute_initialized = 0;
+	DWORD			 flags;
+	BOOL			 ok;
+	int			 rc = -1;
+
+	memset(&startup, 0, sizeof startup);
+	memset(&pi, 0, sizeof pi);
+
+	if (win32d_resolve_self_path(self) != 0)
+		goto out;
+	if (win32d_build_command_line(self, handle->pipe_ctl_name,
+	    handle->pipe_evt_name, socket_name, &command_line) != 0)
+		goto out;
+
+	system_root = win32d_system_root();
+	if (system_root == NULL)
+		goto out;
+
+	if (win32d_open_nul(&nul_in, TRUE, GENERIC_READ) != 0)
+		goto out;
+	if (win32d_open_nul(&nul_out, TRUE, GENERIC_WRITE) != 0)
+		goto out;
+	if (win32d_open_nul(&nul_err, TRUE, GENERIC_WRITE) != 0)
+		goto out;
+
+	/* Inheritance whitelist: pipe_ctl, pipe_evt, NUL stdio. */
+	inherit_handles[inherit_count++] = handle->pipe_ctl;
+	inherit_handles[inherit_count++] = handle->pipe_evt;
+	inherit_handles[inherit_count++] = nul_in;
+	inherit_handles[inherit_count++] = nul_out;
+	inherit_handles[inherit_count++] = nul_err;
+
+	InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
+	attribute_list = HeapAlloc(GetProcessHeap(), 0, attribute_size);
+	if (attribute_list == NULL) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		goto out;
+	}
+	if (!InitializeProcThreadAttributeList(attribute_list, 1, 0,
+	    &attribute_size))
+		goto out;
+	attribute_initialized = 1;
+	if (!UpdateProcThreadAttribute(attribute_list, 0,
+	    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit_handles,
+	    inherit_count * sizeof inherit_handles[0], NULL, NULL))
+		goto out;
+
+	if (!CreateEnvironmentBlock((LPVOID *)&environment, NULL, FALSE))
+		environment = NULL;
+
+	startup.StartupInfo.cb = sizeof startup;
+	startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+	startup.StartupInfo.hStdInput = nul_in;
+	startup.StartupInfo.hStdOutput = nul_out;
+	startup.StartupInfo.hStdError = nul_err;
+	startup.lpAttributeList = attribute_list;
+
+	flags = DETACHED_PROCESS |
+	    CREATE_NEW_PROCESS_GROUP |
+	    CREATE_UNICODE_ENVIRONMENT |
+	    EXTENDED_STARTUPINFO_PRESENT |
+	    CREATE_BREAKAWAY_FROM_JOB;
+
+	ok = CreateProcessW(self, command_line, NULL, NULL, TRUE, flags,
+	    environment, system_root, &startup.StartupInfo, &pi);
+	if (!ok)
+		goto out;
+
+	handle->child_process = pi.hProcess;
+	handle->child_pid = pi.dwProcessId;
+	if (pi.hThread != NULL)
+		CloseHandle(pi.hThread);
+	pi.hThread = NULL;
+	pi.hProcess = NULL;
+	rc = 0;
+
+out:
+	if (pi.hProcess != NULL) {
+		TerminateProcess(pi.hProcess, 1);
+		CloseHandle(pi.hProcess);
+	}
+	if (pi.hThread != NULL)
+		CloseHandle(pi.hThread);
+	if (attribute_list != NULL) {
+		if (attribute_initialized)
+			DeleteProcThreadAttributeList(attribute_list);
+		HeapFree(GetProcessHeap(), 0, attribute_list);
+	}
+	if (environment != NULL)
+		DestroyEnvironmentBlock(environment);
+	if (nul_in != INVALID_HANDLE_VALUE)
+		CloseHandle(nul_in);
+	if (nul_out != INVALID_HANDLE_VALUE)
+		CloseHandle(nul_out);
+	if (nul_err != INVALID_HANDLE_VALUE)
+		CloseHandle(nul_err);
+	free(command_line);
+	free(system_root);
+	return (rc);
+}
+
 int
 win32_daemon_spawn_server(struct win32_daemon_handle *handle,
     const char *socket_name)
@@ -185,14 +424,20 @@ win32_daemon_spawn_server(struct win32_daemon_handle *handle,
 		SetLastError(saved);
 		return (-1);
 	}
+	if (win32d_spawn_child(handle, socket_name) != 0) {
+		DWORD saved = GetLastError();
+		win32_daemon_close(handle);
+		SetLastError(saved);
+		return (-1);
+	}
 	/*
-	 * Subsequent layers (T-007 spawn, T-008 endpoint, T-009 handshake)
-	 * are added by their respective commits; until then, returning here
-	 * is enough to satisfy T-006 acceptance: both pipes exist with
-	 * ACL/inheritance flags as required.
+	 * Endpoint write (T-008) and 3-way handshake (T-009) layered in by
+	 * subsequent commits. T-007 acceptance only requires spawn to enter
+	 * the detached branch without fatalx; success here means the child
+	 * is alive and the server-end pipes are listening.
 	 */
-	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-	return (-1);
+	handle->state = WIN32_DAEMON_STATE_HANDSHAKING;
+	return (0);
 }
 
 int

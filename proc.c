@@ -45,6 +45,8 @@
 
 #ifdef _WIN32
 #include "compat/win32-socketpair.h"
+#include "compat/win32-daemon.h"
+#include "compat/win32-errno.h"
 #endif
 
 struct tmuxproc {
@@ -491,8 +493,44 @@ pid_t
 proc_fork_and_daemon(int *fd)
 {
 #ifdef _WIN32
-	(void)fd;
-	fatalx("proc_fork_and_daemon is not implemented on Windows");
+	struct win32_daemon_handle	handle;
+	pid_t				pid;
+
+	/*
+	 * Windows path (FR-001 / tasks.md T-007): replace the historical
+	 * fatalx with a real CreateProcessW spawn. The detached server
+	 * lives in its own process; the client keeps the control-pipe
+	 * handles and is the only side that returns to its caller.
+	 *
+	 * The fd channel (*fd) is wired to the message-mode -ctl pipe by
+	 * subsequent commits (T-010). Until then *fd is set to -1 and the
+	 * caller returns an error to the user, which is the explicit
+	 * Phase 1 contract of T-007: "spawn branch entered, no more
+	 * fatalx" rather than "end-to-end working session".
+	 */
+	if (fd == NULL) {
+		errno = EINVAL;
+		return (-1);
+	}
+	*fd = -1;
+	if (win32_daemon_spawn_server(&handle, socket_path) != 0) {
+		errno = win32_errno_from_lasterror();
+		log_debug("[winport/daemon] spawn_server failed: errno=%d",
+		    errno);
+		return (-1);
+	}
+	pid = (pid_t)handle.child_pid;
+	log_debug("[winport/daemon] detached server spawned, pid=%ld", (long)pid);
+	/*
+	 * The handle is released here because T-010 has not yet fed the
+	 * pipe into imsgbuf. This intentionally fails the parent flow so
+	 * server.c falls back to its existing error path; once T-010 lands
+	 * the pipe HANDLE is duped into a CRT fd via _open_osfhandle and
+	 * passed back via *fd.
+	 */
+	win32_daemon_close(&handle);
+	errno = ENOSYS;
+	return (-1);
 #else
 	pid_t	pid;
 	int	pair[2];
