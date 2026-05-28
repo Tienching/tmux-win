@@ -297,6 +297,8 @@ dist_tmux_SOURCES += \
 	compat/win32-conpty.h \
 	compat/win32-daemon.c \
 	compat/win32-daemon.h \
+	compat/win32-endpoint.c \
+	compat/win32-endpoint.h \
 	compat/win32-environment.c \
 	compat/win32-environment.h \
 	compat/win32-fnmatch.c \
