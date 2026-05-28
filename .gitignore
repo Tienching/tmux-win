@@ -41,3 +41,11 @@ tmux.1.*
 *.ilk
 *.ps1.bak
 windows/dist/
+
+# Local working directories produced by editors / coding assistants / this
+# branch's verification harness. None of them belong in upstream history.
+.codex-tmp/
+.codebuddy/
+.workbuddy/
+build-logs/
+openspec/
