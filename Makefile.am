@@ -289,6 +289,8 @@ endif
 
 if IS_WINDOWS
 dist_tmux_SOURCES += \
+	compat/win32-acl.c \
+	compat/win32-acl.h \
 	compat/win32-clipboard.c \
 	compat/win32-clipboard.h \
 	compat/win32-command.c \
