@@ -303,6 +303,8 @@ dist_tmux_SOURCES += \
 	compat/win32-endpoint.h \
 	compat/win32-environment.c \
 	compat/win32-environment.h \
+	compat/win32-errno.c \
+	compat/win32-errno.h \
 	compat/win32-fnmatch.c \
 	compat/win32-handle.c \
 	compat/win32-handle.h \
