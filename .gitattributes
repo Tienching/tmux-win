@@ -1,0 +1,65 @@
+# tmux .gitattributes
+#
+# Default: let git decide line endings per file content. This avoids surprise
+# CRLF normalisation on the Windows port branch when core.autocrlf=true.
+* text=auto
+
+# Unix toolchain inputs MUST stay LF. autoconf 2.72 line-continuation parsing
+# breaks if `\` is followed by CRLF instead of LF; automake / make / sh / yacc
+# all expect LF as well. Anything that gets fed to autoreconf / configure /
+# make / bison / yacc / a POSIX shell goes here.
+*.ac        text eol=lf
+*.am        text eol=lf
+*.in        text eol=lf
+*.m4        text eol=lf
+*.y         text eol=lf
+*.l         text eol=lf
+Makefile    text eol=lf
+Makefile.*  text eol=lf
+configure   text eol=lf
+*.sh        text eol=lf
+autogen.sh  text eol=lf
+mdoc2man.awk text eol=lf
+
+# C / C++ sources are read by mingw gcc on Windows and gcc/clang on POSIX.
+# Both accept either, but mixing CRLF + LF inside one file (which is what
+# autocrlf=true tends to produce on a port branch with hand-written .c files)
+# is a footgun. Pin to LF.
+*.c         text eol=lf
+*.cc        text eol=lf
+*.cpp       text eol=lf
+*.h         text eol=lf
+*.hh        text eol=lf
+*.hpp       text eol=lf
+
+# Manual pages and presentations are processed by mdoc / nroff which are LF.
+*.1         text eol=lf
+*.[2-9]     text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+
+# Windows-only assets keep CRLF — they're consumed by PowerShell / cmd.exe /
+# Visual Studio tooling that generally prefers CRLF.
+*.ps1       text eol=crlf
+*.psm1      text eol=crlf
+*.psd1      text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+*.sln       text eol=crlf
+*.vcxproj   text eol=crlf
+
+# Binary assets — never normalise.
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.exe       binary
+*.dll       binary
+*.zip       binary
+*.msix      binary
+*.appx      binary
+*.pfx       binary
+*.p12       binary
+*.cer       binary
+*.lib       binary
+*.exp       binary
+*.pdb       binary
