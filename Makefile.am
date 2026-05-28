@@ -124,8 +124,8 @@ if IS_WINDOWS
 AM_CPPFLAGS += -I$(srcdir)/compat -DTMUX_SOCK_PERM=0 \
 	-D_WIN32_WINNT=0x0A00 \
 	-DNTDDI_VERSION=0x0A000006
-AM_CXXFLAGS += -std=gnu++11
-LDADD += -lws2_32 -ladvapi32 -lbcrypt -luserenv -lshlwapi -lshell32 -lole32
+AM_CXXFLAGS = -std=gnu++11
+LDADD += -lws2_32 -ladvapi32 -lbcrypt -luserenv -lshlwapi -lshell32 -lole32 -luuid
 endif
 
 # List of sources.

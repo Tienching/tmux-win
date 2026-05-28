@@ -2246,8 +2246,8 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 		if (server_client_dispatch_command(c, imsg) != 0)
 			goto bad;
 		break;
-	case MSG_STDIN:
 #ifdef _WIN32
+	case MSG_STDIN:
 		if (datalen == 0)
 			break;
 		if (c->win32_stdio_bridge == NULL ||
@@ -2255,8 +2255,6 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 		    imsg->data, datalen) != 0)
 			goto bad;
 		break;
-#else
-		goto bad;
 #endif
 	case MSG_RESIZE:
 #ifdef _WIN32
