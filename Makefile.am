@@ -312,6 +312,8 @@ dist_tmux_SOURCES += \
 	compat/win32-process.h \
 	compat/win32-pty.c \
 	compat/win32-pty.h \
+	compat/win32-rand.c \
+	compat/win32-rand.h \
 	compat/win32-regex.cc \
 	compat/win32-regex.h \
 	compat/win32-spawn.c \
