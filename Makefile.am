@@ -125,7 +125,7 @@ AM_CPPFLAGS += -I$(srcdir)/compat -DTMUX_SOCK_PERM=0 \
 	-D_WIN32_WINNT=0x0A00 \
 	-DNTDDI_VERSION=0x0A000006
 AM_CXXFLAGS += -std=gnu++11
-LDADD += -lws2_32
+LDADD += -lws2_32 -ladvapi32 -lbcrypt -luserenv -lshlwapi -lshell32 -lole32
 endif
 
 # List of sources.
@@ -295,6 +295,8 @@ dist_tmux_SOURCES += \
 	compat/win32-command.h \
 	compat/win32-conpty.c \
 	compat/win32-conpty.h \
+	compat/win32-daemon.c \
+	compat/win32-daemon.h \
 	compat/win32-environment.c \
 	compat/win32-environment.h \
 	compat/win32-fnmatch.c \
