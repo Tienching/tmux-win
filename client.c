@@ -83,6 +83,9 @@ static struct client_files client_files = RB_INITIALIZER(&client_files);
 #ifndef DISABLE_NEWLINE_AUTO_RETURN
 #define DISABLE_NEWLINE_AUTO_RETURN 0x0008
 #endif
+#ifndef ENABLE_VIRTUAL_TERMINAL_INPUT
+#define ENABLE_VIRTUAL_TERMINAL_INPUT 0x0200
+#endif
 static struct event	 client_win32_resize_event;
 static int		 client_win32_resize_event_set;
 static u_int		 client_win32_resize_sx;
@@ -102,6 +105,10 @@ static DWORD		 client_win32_stdout_mode;
 static int		 client_win32_stdout_mode_valid;
 static UINT		 client_win32_stdout_codepage;
 static int		 client_win32_stdout_codepage_valid;
+static DWORD		 client_win32_stdin_mode;
+static int		 client_win32_stdin_mode_valid;
+static UINT		 client_win32_stdin_codepage;
+static int		 client_win32_stdin_codepage_valid;
 static struct event	 client_win32_signal_event;
 static int		 client_win32_signal_event_set;
 static uintptr_t	 client_win32_signal_socket = (uintptr_t)INVALID_SOCKET;
@@ -130,6 +137,7 @@ static void		 client_win32_stdin_callback(evutil_socket_t, short,
 			     void *);
 static void		 client_win32_start_stdin_proxy(void);
 static void		 client_win32_stop_stdin_proxy(void);
+static void		 client_win32_restore_stdin(void);
 static DWORD WINAPI	 client_win32_stdout_thread_proc(LPVOID);
 static int		 client_win32_prepare_stdout(HANDLE);
 static void		 client_win32_restore_stdout(void);
@@ -630,6 +638,7 @@ client_win32_start_stdin_proxy(void)
 	uintptr_t	pair[2];
 	HANDLE		input;
 	DWORD		mode;
+	UINT		cp;
 
 	if (client_win32_stdin_event_set || (client_flags & CLIENT_CONTROL))
 		return;
@@ -638,6 +647,35 @@ client_win32_start_stdin_proxy(void)
 	if (input == INVALID_HANDLE_VALUE || input == NULL ||
 	    !GetConsoleMode(input, &mode))
 		return;
+
+	/* Save original stdin mode and codepage for restore on exit. */
+	if (!client_win32_stdin_mode_valid) {
+		client_win32_stdin_mode = mode;
+		client_win32_stdin_mode_valid = 1;
+	}
+	if (!client_win32_stdin_codepage_valid) {
+		cp = GetConsoleCP();
+		if (cp != 0) {
+			client_win32_stdin_codepage = cp;
+			client_win32_stdin_codepage_valid = 1;
+		}
+	}
+	if (client_win32_stdin_codepage_valid)
+		SetConsoleCP(CP_UTF8);
+
+	/*
+	 * Put the console into raw VT input mode so keyboard input is delivered
+	 * to tmux as VT/UTF-8 sequences instead of being line-buffered, echoed
+	 * or cooked by the console.
+	 */
+	mode &= ~(ENABLE_ECHO_INPUT|ENABLE_LINE_INPUT|
+	    ENABLE_PROCESSED_INPUT);
+	mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+	if (!SetConsoleMode(input, mode)) {
+		/* Fallback for older Windows without VT input support. */
+		mode &= ~ENABLE_VIRTUAL_TERMINAL_INPUT;
+		SetConsoleMode(input, mode);
+	}
 
 	if (win32_socketpair(pair) != 0)
 		return;
@@ -657,6 +695,23 @@ client_win32_start_stdin_proxy(void)
 	    (LPVOID)client_win32_stdin_bridge_socket, 0, NULL);
 	if (client_win32_stdin_thread == NULL)
 		client_win32_stop_stdin_proxy();
+}
+
+static void
+client_win32_restore_stdin(void)
+{
+	HANDLE	input;
+
+	input = GetStdHandle(STD_INPUT_HANDLE);
+	if (client_win32_stdin_mode_valid &&
+	    input != INVALID_HANDLE_VALUE && input != NULL) {
+		SetConsoleMode(input, client_win32_stdin_mode);
+		client_win32_stdin_mode_valid = 0;
+	}
+	if (client_win32_stdin_codepage_valid) {
+		SetConsoleCP(client_win32_stdin_codepage);
+		client_win32_stdin_codepage_valid = 0;
+	}
 }
 
 static void
@@ -682,6 +737,7 @@ client_win32_stop_stdin_proxy(void)
 		CloseHandle(client_win32_stdin_thread);
 		client_win32_stdin_thread = NULL;
 	}
+	client_win32_restore_stdin();
 }
 
 static DWORD WINAPI
