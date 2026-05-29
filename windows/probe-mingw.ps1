@@ -895,9 +895,13 @@ try {
 	Invoke-Compile $CC ($common + @("-c", $source, "-o", $object))
 	$objects.Add($object)
 
+	# cmd-parse.c is the generated parser and is compiled separately above.
+	# Exclude it here so a copy left in the tree (some bison builds ignore
+	# -o and emit cmd-parse.c into the working directory) is not compiled a
+	# second time, which would cause duplicate-symbol link errors.
 	$rootFiles = Get-ChildItem -LiteralPath $Root -Filter "*.c" -File |
 	    Where-Object {
-		    $_.Name -notin @("image.c", "image-sixel.c") -and
+		    $_.Name -notin @("image.c", "image-sixel.c", "cmd-parse.c") -and
 		    (($_.Name -notlike "osdep-*.c") -or ($_.Name -eq "osdep-windows.c"))
 	    } |
 	    Sort-Object Name
@@ -983,6 +987,25 @@ try {
 		}
 		Copy-Item -LiteralPath $exe -Destination $output -Force
 		Write-Host "output=$output"
+
+		# Copy the mingw runtime DLLs the binary links against next to
+		# the output executable, so tmux.exe can be launched from any
+		# directory without D:\msys64\ucrt64\bin on PATH. Without this the
+		# process fails to load and exits silently with no output.
+		$ccCommand = Get-Command $CC -ErrorAction SilentlyContinue
+		if ($ccCommand -and $ccCommand.Source) {
+			$ccDir = Split-Path -Parent $ccCommand.Source
+			$runtimeDlls = @('libevent-7.dll', 'libgcc_s_seh-1.dll',
+			    'libwinpthread-1.dll', 'libstdc++-6.dll')
+			foreach ($dll in $runtimeDlls) {
+				$dllSource = Join-Path $ccDir $dll
+				if (Test-Path -LiteralPath $dllSource) {
+					Copy-Item -LiteralPath $dllSource `
+					    -Destination $outputDirectory -Force
+					Write-Host "runtime dll: $dll"
+				}
+			}
+		}
 	}
 }
 finally {
