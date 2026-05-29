@@ -770,6 +770,17 @@ main(int argc, char **argv)
 		    strcasestr(s, "UTF8") != NULL)
 			flags |= CLIENT_UTF8;
 	}
+#ifdef _WIN32
+	/*
+	 * The Windows console host and the ConPTY pane bridge are always driven
+	 * in UTF-8 by this port (the stdin/stdout code pages are forced to
+	 * CP_UTF8), and Windows does not expose UTF-8 through the LC_ALL,
+	 * LC_CTYPE or LANG variables. Without this, non-ASCII cells are
+	 * rendered as underscores by tty_check_codeset(), so always treat the
+	 * client as UTF-8.
+	 */
+	flags |= CLIENT_UTF8;
+#endif
 
 	global_options = options_create(NULL);
 	global_s_options = options_create(NULL);
