@@ -1435,8 +1435,6 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 	char		 tmp[128], *endptr, p[32] = { 0 }, *cp, *next;
 
 	*size = 0;
-	if (tty->flags & TTY_HAVEDA)
-		return (-1);
 
 	/* First three bytes are always \033[?. */
 	if (buf[0] != '\033')
@@ -1466,6 +1464,18 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 		return (-1);
 	tmp[i] = '\0';
 	*size = 4 + i;
+
+	/*
+	 * If the primary DA was already recorded, this is a duplicate or late
+	 * response (the Windows console re-answers \033[c queries even after
+	 * the first reply). Consume and discard it so it is not delivered to
+	 * the active pane as if it had been typed.
+	 */
+	if (tty->flags & TTY_HAVEDA) {
+		log_debug("%s: ignoring repeated primary DA %.*s", c->name,
+		    (int)*size, buf);
+		return (0);
+	}
 
 	/* Convert all arguments to numbers. */
 	cp = tmp;
@@ -1519,8 +1529,6 @@ tty_keys_device_attributes2(struct tty *tty, const char *buf, size_t len,
 	char		 tmp[128], *endptr, p[32] = { 0 }, *cp, *next;
 
 	*size = 0;
-	if (tty->flags & TTY_HAVEDA2)
-		return (-1);
 
 	/* First three bytes are always \033[>. */
 	if (buf[0] != '\033')
@@ -1550,6 +1558,13 @@ tty_keys_device_attributes2(struct tty *tty, const char *buf, size_t len,
 		return (-1);
 	tmp[i] = '\0';
 	*size = 4 + i;
+
+	/* Discard a duplicate or late secondary DA response (see above). */
+	if (tty->flags & TTY_HAVEDA2) {
+		log_debug("%s: ignoring repeated secondary DA %.*s", c->name,
+		    (int)*size, buf);
+		return (0);
+	}
 
 	/* Convert all arguments to numbers. */
 	cp = tmp;
@@ -1599,8 +1614,6 @@ tty_keys_extended_device_attributes(struct tty *tty, const char *buf,
 	char		 tmp[128];
 
 	*size = 0;
-	if (tty->flags & TTY_HAVEXDA)
-		return (-1);
 
 	/* First four bytes are always \033P>|. */
 	if (buf[0] != '\033')
@@ -1631,6 +1644,14 @@ tty_keys_extended_device_attributes(struct tty *tty, const char *buf,
 	if (i == (sizeof tmp) - 1)
 		return (-1);
 	*size = 5 + i;
+
+	/* Discard a duplicate or late extended DA response (see above). */
+	if (tty->flags & TTY_HAVEXDA) {
+		log_debug("%s: ignoring repeated extended DA %.*s", c->name,
+		    (int)*size, buf);
+		return (0);
+	}
+
 	if (i == 0)
 		return (0);
 	tmp[i - 1] = '\0';
