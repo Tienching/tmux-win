@@ -310,8 +310,12 @@ dist_tmux_SOURCES += \
 	compat/win32-handle.h \
 	compat/win32-ipc.c \
 	compat/win32-ipc.h \
+	compat/win32-job.c \
+	compat/win32-job.h \
 	compat/win32-process.c \
 	compat/win32-process.h \
+	compat/win32-process-tree.c \
+	compat/win32-process-tree.h \
 	compat/win32-pty.c \
 	compat/win32-pty.h \
 	compat/win32-rand.c \

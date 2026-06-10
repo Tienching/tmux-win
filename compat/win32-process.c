@@ -32,9 +32,27 @@
 #include <string.h>
 
 #include "win32-process.h"
+#include "win32-process-tree.h"
+#include "win32-job.h"
 #include "win32-socketpair.h"
 
 #define WIN32_PROCESS_BUFFER 8192
+#define WIN32_PROCESS_CLOSE_TIMEOUT_MS 5000
+
+/*
+ * Independent thread argument structures.
+ * Worker threads no longer hold a pointer to the parent struct win32_process;
+ * they only hold the immutable handle/socket values they need.
+ */
+struct win32_process_input_args {
+	SOCKET	 bridge_socket;
+	HANDLE	 input;
+};
+
+struct win32_process_output_args {
+	SOCKET	 bridge_socket;
+	HANDLE	 output;
+};
 
 static DWORD WINAPI
 win32_process_close_handle_thread(LPVOID handle)
@@ -63,86 +81,48 @@ win32_process_close_handle(void **handle)
 	CloseHandle(thread);
 }
 
-static void
-win32_process_terminate_process_id(DWORD process_id, unsigned int exit_code)
-{
-	HANDLE	process;
-
-	process = OpenProcess(PROCESS_TERMINATE, FALSE, process_id);
-	if (process != NULL) {
-		TerminateProcess(process, exit_code);
-		CloseHandle(process);
-	}
-}
-
-static void
-win32_process_terminate_children(DWORD parent_id, unsigned int exit_code)
-{
-	HANDLE		 snapshot;
-	PROCESSENTRY32W	 entry;
-
-	snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (snapshot == INVALID_HANDLE_VALUE)
-		return;
-
-	memset(&entry, 0, sizeof entry);
-	entry.dwSize = sizeof entry;
-	if (!Process32FirstW(snapshot, &entry)) {
-		CloseHandle(snapshot);
-		return;
-	}
-
-	do {
-		if (entry.th32ParentProcessID == parent_id) {
-			win32_process_terminate_children(entry.th32ProcessID,
-			    exit_code);
-			win32_process_terminate_process_id(entry.th32ProcessID,
-			    exit_code);
-		}
-	} while (Process32NextW(snapshot, &entry));
-
-	CloseHandle(snapshot);
-}
 
 static DWORD WINAPI
 win32_process_socket_to_stdin(LPVOID data)
 {
-	struct win32_process	*process = data;
-	char			 buffer[WIN32_PROCESS_BUFFER];
-	int			 n;
-	DWORD			 written;
+	struct win32_process_input_args	*args = data;
+	SOCKET				 bridge_socket = args->bridge_socket;
+	HANDLE				 input = args->input;
+	char				 buffer[WIN32_PROCESS_BUFFER];
+	int				 n;
+	DWORD				 written;
 
 	for (;;) {
-		n = recv((SOCKET)process->bridge_socket, buffer, sizeof buffer,
-		    0);
+		n = recv(bridge_socket, buffer, sizeof buffer, 0);
 		if (n <= 0)
 			break;
-		if (!WriteFile((HANDLE)process->input, buffer, n, &written,
-		    NULL))
+		if (!WriteFile(input, buffer, (DWORD)n, &written, NULL))
 			break;
 	}
-	win32_process_close_handle(&process->input);
-	if (process->bridge_socket != (uintptr_t)INVALID_SOCKET)
-		win32_socket_shutdown_read(process->bridge_socket);
+	win32_process_close_handle((void **)&input);
+	if (bridge_socket != INVALID_SOCKET)
+		win32_socket_shutdown_read((uintptr_t)bridge_socket);
 	return (0);
 }
 
 static DWORD WINAPI
 win32_process_stdout_to_socket(LPVOID data)
 {
-	struct win32_process	*process = data;
-	char			 buffer[WIN32_PROCESS_BUFFER];
-	DWORD			 n;
-	int			 sent, offset;
+	struct win32_process_output_args	*args = data;
+	SOCKET				 bridge_socket = args->bridge_socket;
+	HANDLE				 output = args->output;
+	char				 buffer[WIN32_PROCESS_BUFFER];
+	DWORD				 n;
+	int				 sent, offset;
 
 	for (;;) {
-		if (!ReadFile((HANDLE)process->output, buffer, sizeof buffer,
-		    &n, NULL) || n == 0)
+		if (!ReadFile(output, buffer, sizeof buffer, &n, NULL) ||
+		    n == 0)
 			break;
 		offset = 0;
 		while (offset < (int)n) {
-			sent = send((SOCKET)process->bridge_socket,
-			    buffer + offset, (int)n - offset, 0);
+			sent = send(bridge_socket, buffer + offset,
+			    (int)n - offset, 0);
 			if (sent <= 0)
 				goto out;
 			offset += sent;
@@ -150,8 +130,8 @@ win32_process_stdout_to_socket(LPVOID data)
 	}
 
 out:
-	win32_process_close_handle(&process->output);
-	win32_socket_shutdown(process->bridge_socket, 1);
+	win32_process_close_handle((void **)&output);
+	win32_socket_shutdown((uintptr_t)bridge_socket, 1);
 	return (0);
 }
 
@@ -191,8 +171,11 @@ win32_process_spawn(struct win32_process *process,
 	uintptr_t		 sockets[2];
 	wchar_t			*command;
 	DWORD			 flags = EXTENDED_STARTUPINFO_PRESENT |
-	    CREATE_SUSPENDED|CREATE_NO_WINDOW;
+	    CREATE_SUSPENDED|CREATE_NO_WINDOW|
+	    win32_job_creation_flags_for_child();
 	int			 attributes_initialized = 0;
+	struct win32_process_input_args	*input_args = NULL;
+	struct win32_process_output_args *output_args = NULL;
 
 	if (process == NULL || master_socket == NULL || options == NULL ||
 	    options->command == NULL || *options->command == L'\0') {
@@ -287,7 +270,7 @@ win32_process_spawn(struct win32_process *process,
 		goto fail;
 	}
 	free(command);
-	if (!AssignProcessToJobObject(job, pi.hProcess))
+	if (win32_job_assign_or_fallback(job, pi.hProcess) != 0)
 		goto fail;
 	if (ResumeThread(pi.hThread) == (DWORD)-1)
 		goto fail;
@@ -313,15 +296,43 @@ win32_process_spawn(struct win32_process *process,
 	job = NULL;
 	sockets[1] = (uintptr_t)INVALID_SOCKET;
 
+	input_args = calloc(1, sizeof *input_args);
+	if (input_args == NULL)
+		goto fail;
+	input_args->bridge_socket = (SOCKET)process->bridge_socket;
+	input_args->input = (HANDLE)process->input;
+
 	process->input_thread = CreateThread(NULL, 0,
-	    win32_process_socket_to_stdin, process, 0, NULL);
+	    win32_process_socket_to_stdin, input_args, 0, NULL);
 	if (process->input_thread == NULL)
 		goto fail;
+	/* Ownership of input_args transferred to input thread. */
+	input_args = NULL;
+
 	if (process->output != NULL) {
-		process->output_thread = CreateThread(NULL, 0,
-		    win32_process_stdout_to_socket, process, 0, NULL);
-		if (process->output_thread == NULL)
+		output_args = calloc(1, sizeof *output_args);
+		if (output_args == NULL) {
+			/*
+			 * Input thread already running. Shutdown bridge
+			 * socket to let it exit, then fall through to
+			 * win32_process_close which waits for the thread.
+			 */
 			goto fail;
+		}
+		output_args->bridge_socket = (SOCKET)process->bridge_socket;
+		output_args->output = (HANDLE)process->output;
+
+		process->output_thread = CreateThread(NULL, 0,
+		    win32_process_stdout_to_socket, output_args, 0, NULL);
+		if (process->output_thread == NULL) {
+			output_args->bridge_socket = INVALID_SOCKET;
+			output_args->output = NULL;
+			free(output_args);
+			output_args = NULL;
+			goto fail;
+		}
+		/* Ownership of output_args transferred to output thread. */
+		output_args = NULL;
 	}
 
 	DeleteProcThreadAttributeList(attributes);
@@ -331,6 +342,8 @@ win32_process_spawn(struct win32_process *process,
 	return (0);
 
 fail:
+	free(input_args);
+	free(output_args);
 	if (pi.hProcess != NULL)
 		TerminateProcess(pi.hProcess, 1);
 	if (pi.hThread != NULL)
@@ -411,7 +424,8 @@ win32_process_terminate(struct win32_process *process, unsigned int exit_code)
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return (-1);
 	}
-	win32_process_terminate_children(process->process_id, exit_code);
+	win32_process_tree_terminate_children(process->process_id,
+	    process->process, exit_code);
 	if (process->job != NULL) {
 		if (!TerminateJobObject((HANDLE)process->job, exit_code))
 			return (-1);
@@ -426,6 +440,7 @@ void
 win32_process_close(struct win32_process *process)
 {
 	uintptr_t	socket;
+	DWORD		result;
 
 	if (process == NULL)
 		return;
@@ -433,20 +448,42 @@ win32_process_close(struct win32_process *process)
 	socket = process->bridge_socket;
 	if (socket != (uintptr_t)INVALID_SOCKET)
 		win32_socket_shutdown(socket, 0);
-	win32_process_close_handle(&process->process);
-	win32_process_close_handle(&process->job);
+
 	if (process->input_thread != NULL)
 		CancelSynchronousIo((HANDLE)process->input_thread);
 	if (process->output_thread != NULL)
 		CancelSynchronousIo((HANDLE)process->output_thread);
+
+	/* Wait for IO worker threads. */
 	if (process->input_thread != NULL) {
-		WaitForSingleObject((HANDLE)process->input_thread, 1000);
+		result = WaitForSingleObject((HANDLE)process->input_thread,
+		    WIN32_PROCESS_CLOSE_TIMEOUT_MS);
+		if (result != WAIT_OBJECT_0) {
+			/*
+			 * Input worker did not exit.  Do not close handles
+			 * or memset — worker may still access them.
+			 */
+			return;
+		}
 		CloseHandle((HANDLE)process->input_thread);
+		process->input_thread = NULL;
 	}
 	if (process->output_thread != NULL) {
-		WaitForSingleObject((HANDLE)process->output_thread, 1000);
+		result = WaitForSingleObject((HANDLE)process->output_thread,
+		    WIN32_PROCESS_CLOSE_TIMEOUT_MS);
+		if (result != WAIT_OBJECT_0) {
+			/*
+			 * Output worker did not exit.  Same reasoning:
+			 * do not release resources it may still use.
+			 */
+			return;
+		}
 		CloseHandle((HANDLE)process->output_thread);
+		process->output_thread = NULL;
 	}
+
+	win32_process_close_handle(&process->process);
+	win32_process_close_handle(&process->job);
 	win32_process_close_handle(&process->input);
 	win32_process_close_handle(&process->output);
 	win32_process_close_handle(&process->thread);
