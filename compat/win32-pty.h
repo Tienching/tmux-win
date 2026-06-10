@@ -47,6 +47,7 @@ int		win32_pty_exited(const struct win32_pty *, unsigned long *);
 int		win32_pty_wait(struct win32_pty *, unsigned long,
 		    unsigned long *);
 int		win32_pty_send_ctrl_break(struct win32_pty *);
+int		win32_pty_send_ctrl_break_to_pid(unsigned long);
 int		win32_pty_terminate(struct win32_pty *, unsigned int);
 void		win32_pty_close(struct win32_pty *);
 unsigned long	win32_pty_process_id(const struct win32_pty *);
