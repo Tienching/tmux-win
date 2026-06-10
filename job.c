@@ -37,6 +37,9 @@
 #include "compat/win32-spawn.h"
 
 #define WIN32_JOB_EXIT_GRACE_USEC 100000
+#define WIN32_POLL_INTERVAL_MS 10
+#define WIN32_POLL_IDLE_THRESHOLD 100
+#define WIN32_POLL_IDLE_INTERVAL_MS 100
 #endif
 
 /*
@@ -85,6 +88,7 @@ struct job {
 	struct win32_process	*win32_process;
 	struct event		 win32_poll_event;
 	struct timeval		 win32_exit_time;
+	int			 win32_poll_idle_count;
 #endif
 
 	job_update_cb		 updatecb;
@@ -140,10 +144,10 @@ static void
 job_win32_poll_callback(__unused evutil_socket_t fd, __unused short events, void *data)
 {
 	struct job	*job = data;
-	struct timeval	 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	struct timeval	 tv;
 	struct timeval	 now, diff;
 	unsigned long	 pending;
-	int		 was_closed;
+	int		 was_closed, has_data = 0;
 
 	if ((job->state != JOB_RUNNING && job->state != JOB_CLOSED &&
 	    job->state != JOB_DEAD) || job->event == NULL)
@@ -152,7 +156,11 @@ job_win32_poll_callback(__unused evutil_socket_t fd, __unused short events, void
 	if (job->win32_socket != (uintptr_t)-1 &&
 	    win32_socket_pending(job->win32_socket, &pending) == 0 &&
 	    pending != 0) {
+		has_data = 1;
 		event_active(&job->event->ev_read, EV_READ, 1);
+		tv.tv_sec = 0;
+		tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
+		job->win32_poll_idle_count = 0;
 		evtimer_add(&job->win32_poll_event, &tv);
 		return;
 	}
@@ -160,6 +168,8 @@ job_win32_poll_callback(__unused evutil_socket_t fd, __unused short events, void
 	was_closed = (job->state == JOB_CLOSED);
 	if (job->state == JOB_RUNNING && job_win32_collect_status(job)) {
 		gettimeofday(&job->win32_exit_time, NULL);
+		tv.tv_sec = 0;
+		tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
 		evtimer_add(&job->win32_poll_event, &tv);
 		return;
 	}
@@ -176,6 +186,8 @@ job_win32_poll_callback(__unused evutil_socket_t fd, __unused short events, void
 			timersub(&now, &job->win32_exit_time, &diff);
 			if (diff.tv_sec == 0 &&
 			    diff.tv_usec < WIN32_JOB_EXIT_GRACE_USEC) {
+				tv.tv_sec = 0;
+				tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
 				evtimer_add(&job->win32_poll_event, &tv);
 				return;
 			}
@@ -184,6 +196,18 @@ job_win32_poll_callback(__unused evutil_socket_t fd, __unused short events, void
 			job->completecb(job);
 		job_free(job);
 		return;
+	}
+
+	if (has_data) {
+		job->win32_poll_idle_count = 0;
+		tv.tv_sec = 0;
+		tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
+	} else {
+		job->win32_poll_idle_count++;
+		if (job->win32_poll_idle_count > WIN32_POLL_IDLE_THRESHOLD)
+			tv.tv_sec = 0, tv.tv_usec = WIN32_POLL_IDLE_INTERVAL_MS * 1000;
+		else
+			tv.tv_sec = 0, tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
 	}
 	evtimer_add(&job->win32_poll_event, &tv);
 }
@@ -275,7 +299,7 @@ job_run_win32_pty(const char *cmd, const char *shell, int argc, char **argv,
 	struct win32_spawn_options	 options;
 	struct win32_pty		*pty;
 	struct job			*job;
-	struct timeval			 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	struct timeval			 tv = { .tv_sec = 0, .tv_usec = WIN32_POLL_INTERVAL_MS * 1000 };
 	uintptr_t			 master;
 	char				**environment;
 	char				 *cmd_cwd = NULL, *resolved_cwd, *shell_argv[4];
@@ -386,7 +410,7 @@ job_run_win32_process(const char *cmd, const char *shell, int argc, char **argv,
 	struct win32_spawn_options	 options;
 	struct win32_process		*process;
 	struct job			*job;
-	struct timeval			 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	struct timeval			 tv = { .tv_sec = 0, .tv_usec = WIN32_POLL_INTERVAL_MS * 1000 };
 	uintptr_t			 master;
 	char				**environment;
 	char				 *cmd_cwd = NULL, *resolved_cwd, *shell_argv[4];
