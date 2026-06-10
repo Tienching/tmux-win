@@ -139,23 +139,38 @@ $hash = (Get-FileHash -LiteralPath $Msix -Algorithm SHA256).
     Hash.ToLowerInvariant()
 $signature = Get-AuthenticodeSignature -LiteralPath $Msix
 $signer = $signature.SignerCertificate
+$signerSubject = ""
+$signerIssuer = ""
+$signerThumbprint = ""
+$signerNotBefore = ""
+$signerNotAfter = ""
 $chainStatuses = @()
 if ($signer -ne $null) {
-	$chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
 	try {
-		$chain.ChainPolicy.RevocationMode =
-		    [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-		[void]$chain.Build($signer)
-		$chainStatuses = @($chain.ChainStatus | ForEach-Object {
-		    [pscustomobject]@{
-			Status = [string]$_.Status
-			Information = $_.StatusInformation.Trim()
-		    }
-		})
+		$signerSubject = $signer.Subject
+		$signerIssuer = $signer.Issuer
+		$signerThumbprint = $signer.Thumbprint
+		$signerNotBefore = $signer.NotBefore.ToString("o")
+		$signerNotAfter = $signer.NotAfter.ToString("o")
+		$chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+		try {
+			$chain.ChainPolicy.RevocationMode =
+			    [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+			[void]$chain.Build($signer)
+			$chainStatuses = @($chain.ChainStatus | ForEach-Object {
+			    [pscustomobject]@{
+				Status = [string]$_.Status
+				Information = $_.StatusInformation.Trim()
+			    }
+			})
+		} finally {
+			$chain.Dispose()
+		}
 	} finally {
-		$chain.Dispose()
+		$signer.Dispose()
 	}
 }
+$signerPresent = -not [string]::IsNullOrWhiteSpace($signerThumbprint)
 
 $summarySigned = $false
 $summaryHash = ""
@@ -190,10 +205,10 @@ if (-not [string]::IsNullOrWhiteSpace($summaryPublisher) -and
 }
 
 $signerSubjectMatchesPublisher = $null
-if ($signer -ne $null -and
+if ($signerPresent -and
     -not [string]::IsNullOrWhiteSpace($manifestPublisher)) {
 	$signerSubjectMatchesPublisher =
-	    $signer.Subject -eq $manifestPublisher
+	    $signerSubject -eq $manifestPublisher
 }
 
 $metadataMismatches = [System.Collections.Generic.List[string]]::new()
@@ -206,13 +221,13 @@ if ($summaryPublisherMatchesManifest -eq $false) {
 if ($signerSubjectMatchesPublisher -eq $false) {
 	$metadataMismatches.Add("signer subject does not match manifest Publisher")
 }
-if ($signer -ne $null -and -not $summarySigned) {
+if ($signerPresent -and -not $summarySigned) {
 	$metadataMismatches.Add("MSIX has signer but summary Signed is false")
 }
-if ($signer -eq $null -and $summarySigned) {
+if (-not $signerPresent -and $summarySigned) {
 	$metadataMismatches.Add("summary Signed is true but MSIX has no signer")
 }
-if ($signer -ne $null -and
+if ($signerPresent -and
     [string]::IsNullOrWhiteSpace($manifestPublisher)) {
 	$metadataMismatches.Add("manifest Publisher unavailable")
 }
@@ -228,12 +243,12 @@ $usablePublisherMatchingCandidateCount =
 	$_.SubjectMatchesPublisher -and $_.HasPrivateKey -and $_.IsTimeValid
     }).Count
 
-$status = if ($signature.Status -eq "Valid" -and $signer -ne $null -and
+$status = if ($signature.Status -eq "Valid" -and $signerPresent -and
     $metadataMismatches.Count -eq 0) {
 	"trusted"
-} elseif ($signature.Status -eq "Valid" -and $signer -ne $null) {
+} elseif ($signature.Status -eq "Valid" -and $signerPresent) {
 	"metadata_mismatch"
-} elseif ($signer -ne $null) {
+} elseif ($signerPresent) {
 	"untrusted_or_invalid"
 } else {
 	"unsigned"
@@ -242,7 +257,7 @@ $localProductionCertificateReady =
     $usablePublisherMatchingCandidateCount -gt 0
 $productionSigningReady = $status -eq "trusted"
 $signingReadinessGaps = [System.Collections.Generic.List[string]]::new()
-if ($signer -eq $null) {
+if (-not $signerPresent) {
 	$signingReadinessGaps.Add("MSIX is not Authenticode signed.")
 } elseif ($signature.Status -ne "Valid") {
 	$signingReadinessGaps.Add(
@@ -291,13 +306,13 @@ $audit = [pscustomobject]@{
 	CertificateStoreErrors = $candidateAudit.StoreErrors
 	AuthenticodeStatus = [string]$signature.Status
 	AuthenticodeStatusMessage = [string]$signature.StatusMessage
-	Signer = $(if ($signer -ne $null) {
+	Signer = $(if ($signerPresent) {
 	    [pscustomobject]@{
-		Subject = $signer.Subject
-		Issuer = $signer.Issuer
-		Thumbprint = $signer.Thumbprint
-		NotBefore = $signer.NotBefore.ToString("o")
-		NotAfter = $signer.NotAfter.ToString("o")
+		Subject = $signerSubject
+		Issuer = $signerIssuer
+		Thumbprint = $signerThumbprint
+		NotBefore = $signerNotBefore
+		NotAfter = $signerNotAfter
 	    }
 	} else { $null })
 	ChainStatus = $chainStatuses
@@ -315,8 +330,8 @@ Write-Host "status=$status"
 Write-Host "production_signing_ready=$productionSigningReady"
 Write-Host "local_production_certificate_ready=$localProductionCertificateReady"
 Write-Host "authenticode_status=$($signature.Status)"
-if ($signer -ne $null) {
-	Write-Host "signer_thumbprint=$($signer.Thumbprint)"
+if ($signerPresent) {
+	Write-Host "signer_thumbprint=$signerThumbprint"
 }
 if ($RequireTrusted -and $status -ne "trusted") {
 	exit 1

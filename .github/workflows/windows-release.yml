@@ -37,9 +37,14 @@ permissions:
   actions: read
   contents: write
 
+concurrency:
+  group: windows-release-${{ inputs.tag_name || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   windows-release:
     runs-on: windows-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -95,10 +100,11 @@ jobs:
             $certificatePath = Join-Path $env:RUNNER_TEMP "tmux-codesign.pfx"
             [IO.File]::WriteAllBytes($certificatePath,
               [Convert]::FromBase64String($env:TMUX_WINDOWS_CODESIGN_PFX_BASE64))
+            $securePassword = ConvertTo-SecureString $env:TMUX_WINDOWS_CODESIGN_PASSWORD -AsPlainText -Force
             $releaseArgs += @(
               "-SignMsix",
               "-MsixCertificatePath", $certificatePath,
-              "-MsixCertificatePassword", $env:TMUX_WINDOWS_CODESIGN_PASSWORD
+              "-MsixCertificatePasswordSecure", $securePassword
             )
           }
           try {

@@ -14,6 +14,7 @@ param(
 	[string]$TimestampUrl = "http://timestamp.digicert.com",
 	[string]$CertificatePath = "",
 	[string]$CertificatePassword = "",
+	[SecureString]$CertificatePasswordSecure = $null,
 	[string]$CertificateThumbprint = "",
 	[string]$SummaryPath = "",
 	[switch]$Sign,
@@ -267,8 +268,12 @@ if ($Sign -and [string]::IsNullOrWhiteSpace($CertificatePath) -and
 $signingCertificateInfo = $null
 if ($Sign) {
 	$signingCertificate = Get-SigningCertificate
-	$signingCertificateInfo =
-	    Test-SigningCertificateReady $signingCertificate
+	try {
+		$signingCertificateInfo =
+		    Test-SigningCertificateReady $signingCertificate
+	} finally {
+		$signingCertificate.Dispose()
+	}
 }
 
 $makeAppxPath = Resolve-MakeAppx
@@ -352,7 +357,16 @@ try {
 		if (-not [string]::IsNullOrWhiteSpace($CertificatePath)) {
 			$signArgs += @("/f", (Resolve-Path -LiteralPath `
 			    $CertificatePath).Path)
-			if (-not [string]::IsNullOrWhiteSpace(
+			if ($null -ne $CertificatePasswordSecure) {
+				try {
+					$credential = [System.Management.Automation.PSCredential]::new(
+						"_", $CertificatePasswordSecure)
+					$plainPassword = $credential.GetNetworkCredential().Password
+					$signArgs += @("/p", $plainPassword)
+				} finally {
+					$plainPassword = $null
+				}
+			} elseif (-not [string]::IsNullOrWhiteSpace(
 			    $CertificatePassword)) {
 				$signArgs += @("/p", $CertificatePassword)
 			}
@@ -361,7 +375,15 @@ try {
 			    $CertificateThumbprint.Replace(" ", ""))
 		}
 		$signArgs += $Output
-		Invoke-Native $signToolPath $signArgs | Out-Null
+		$output = & $signToolPath @signArgs 2>&1
+		if ($LASTEXITCODE -ne 0) {
+			$output | Select-Object -First 80 | Where-Object {
+				$_ -notmatch '/p\s'
+			} | ForEach-Object {
+				[Console]::Error.WriteLine($_)
+			}
+			throw "signtool failed"
+		}
 		$signed = $true
 	}
 
