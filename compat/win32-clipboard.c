@@ -35,11 +35,20 @@ win32_clipboard_open(void)
 	DWORD	last = ERROR_SUCCESS;
 	int	i;
 
-	for (i = 0; i < 10; i++) {
+	/*
+	 * Retry loop for OpenClipboard – it fails if another process holds
+	 * the clipboard.  Keep the total blocking window under ~150 ms so
+	 * the tmux server loop is not stalled for too long.
+	 *
+	 * TODO: Replace this synchronous spin with an async retry
+	 * mechanism (e.g. queue the operation and retry from the event
+	 * loop) so the server loop never blocks on clipboard access.
+	 */
+	for (i = 0; i < 3; i++) {
 		if (OpenClipboard(NULL))
 			return (0);
 		last = GetLastError();
-		Sleep(100);
+		Sleep(50);
 	}
 	SetLastError(last);
 	return (-1);
