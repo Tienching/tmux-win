@@ -47,6 +47,10 @@
 #include "compat/win32-socketpair.h"
 #include "compat/win32-daemon.h"
 #include "compat/win32-errno.h"
+
+#define WIN32_POLL_INTERVAL_MS 10
+#define WIN32_POLL_IDLE_THRESHOLD 100
+#define WIN32_POLL_IDLE_INTERVAL_MS 100
 #endif
 
 struct tmuxproc {
@@ -74,6 +78,7 @@ struct tmuxpeer {
 	struct event	 event;
 #ifdef _WIN32
 	struct event	 poll_event;
+	int		 poll_idle_count;
 #endif
 	uid_t		 uid;
 
@@ -95,6 +100,21 @@ static void	proc_win32_poll_cb(evutil_socket_t, short, void *);
 
 #ifdef _WIN32
 static struct tmuxproc	*proc_win32_signal_proc;
+static uintptr_t		 win32_signal_socket = (uintptr_t)INVALID_SOCKET;
+static uintptr_t		 win32_signal_pair = (uintptr_t)INVALID_SOCKET;
+static struct event		 win32_signal_event;
+
+static void
+win32_signal_read_cb(__unused evutil_socket_t fd, __unused short events,
+    __unused void *arg)
+{
+	unsigned char	signo;
+
+	if (recv((SOCKET)win32_signal_socket, (char *)&signo, 1, 0) == 1 &&
+	    proc_win32_signal_proc != NULL &&
+	    proc_win32_signal_proc->signalcb != NULL)
+		proc_win32_signal_proc->signalcb(signo);
+}
 
 static BOOL WINAPI
 proc_win32_console_handler(DWORD type)
@@ -118,7 +138,7 @@ proc_win32_console_handler(DWORD type)
 	default:
 		return (FALSE);
 	}
-	proc_win32_signal_proc->signalcb(signo);
+	send((SOCKET)win32_signal_pair, (const char *)&signo, 1, 0);
 	return (TRUE);
 }
 #endif
@@ -183,7 +203,7 @@ static void
 proc_win32_poll_cb(__unused evutil_socket_t fd, __unused short events, void *arg)
 {
 	struct tmuxpeer	*peer = arg;
-	struct timeval	 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	struct timeval	 tv;
 	unsigned long	 pending;
 	short		 ready = 0;
 
@@ -192,13 +212,23 @@ proc_win32_poll_cb(__unused evutil_socket_t fd, __unused short events, void *arg
 	 * queues a reply from inside a read callback. Poll nonblocking sockets
 	 * on a short persistent timer so IPC makes progress.
 	 */
-	evtimer_add(&peer->poll_event, &tv);
 	if (win32_socket_pending(peer->ibuf.fd, &pending) == 0 && pending != 0)
 		ready |= EV_READ;
 	if (imsgbuf_queuelen(&peer->ibuf) > 0)
 		ready |= EV_WRITE;
-	if (ready != 0)
+	if (ready != 0) {
+		peer->poll_idle_count = 0;
 		proc_event_cb(peer->ibuf.fd, ready, peer);
+		tv.tv_sec = 0;
+		tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
+	} else {
+		peer->poll_idle_count++;
+		if (peer->poll_idle_count > WIN32_POLL_IDLE_THRESHOLD)
+			tv.tv_sec = 0, tv.tv_usec = WIN32_POLL_IDLE_INTERVAL_MS * 1000;
+		else
+			tv.tv_sec = 0, tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
+	}
+	evtimer_add(&peer->poll_event, &tv);
 }
 #endif
 
@@ -327,8 +357,20 @@ void
 proc_set_signals(struct tmuxproc *tp, void (*signalcb)(int))
 {
 #ifdef _WIN32
+	uintptr_t	pair[2];
+
 	tp->signalcb = signalcb;
 	proc_win32_signal_proc = tp;
+	if (win32_signal_socket == (uintptr_t)INVALID_SOCKET) {
+		if (win32_socketpair(pair) == 0) {
+			win32_signal_socket = pair[0];
+			win32_signal_pair = pair[1];
+			event_set(&win32_signal_event,
+			    (evutil_socket_t)win32_signal_socket,
+			    EV_READ | EV_PERSIST, win32_signal_read_cb, NULL);
+			event_add(&win32_signal_event, NULL);
+		}
+	}
 	SetConsoleCtrlHandler(proc_win32_console_handler, TRUE);
 #else
 	struct sigaction	sa;
@@ -374,6 +416,13 @@ proc_clear_signals(struct tmuxproc *tp, int defaults)
 		SetConsoleCtrlHandler(proc_win32_console_handler, FALSE);
 		proc_win32_signal_proc = NULL;
 	}
+	if (win32_signal_socket != (uintptr_t)INVALID_SOCKET) {
+		event_del(&win32_signal_event);
+		win32_socket_close(win32_signal_pair);
+		win32_socket_close(win32_signal_socket);
+		win32_signal_pair = (uintptr_t)INVALID_SOCKET;
+		win32_signal_socket = (uintptr_t)INVALID_SOCKET;
+	}
 #else
 	struct sigaction	sa;
 
@@ -414,7 +463,7 @@ proc_add_peer(struct tmuxproc *tp, imsg_fd_t fd,
 {
 	struct tmuxpeer	*peer;
 #ifdef _WIN32
-	struct timeval	 tv = { .tv_sec = 0, .tv_usec = 10000 };
+	struct timeval	 tv = { .tv_sec = 0, .tv_usec = WIN32_POLL_INTERVAL_MS * 1000 };
 #else
 	gid_t		 gid;
 #endif
