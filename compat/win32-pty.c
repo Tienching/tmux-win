@@ -31,50 +31,30 @@
 #include <string.h>
 
 #include "win32-pty.h"
+#include "win32-process-tree.h"
 #include "win32-socketpair.h"
 
 #define WIN32_PTY_BUFFER 8192
+#define WIN32_PTY_CLOSE_TIMEOUT_MS 5000
 
-static void
-win32_pty_terminate_process_id(DWORD process_id, unsigned int exit_code)
-{
-	HANDLE	process;
+/*
+ * Independent thread argument structures.
+ * Worker threads no longer hold a pointer to the parent struct win32_pty;
+ * they only hold the immutable handle/socket values they need.  This
+ * eliminates the use-after-close risk when win32_pty_close() frees
+ * resources before workers have exited.
+ */
+struct win32_pty_input_args {
+	SOCKET	 bridge_socket;
+	HANDLE	 input;
+	DWORD	 process_id;
+};
 
-	process = OpenProcess(PROCESS_TERMINATE, FALSE, process_id);
-	if (process != NULL) {
-		TerminateProcess(process, exit_code);
-		CloseHandle(process);
-	}
-}
+struct win32_pty_output_args {
+	SOCKET	 bridge_socket;
+	HANDLE	 output;
+};
 
-static void
-win32_pty_terminate_children(DWORD parent_id, unsigned int exit_code)
-{
-	HANDLE		 snapshot;
-	PROCESSENTRY32W	 entry;
-
-	snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (snapshot == INVALID_HANDLE_VALUE)
-		return;
-
-	memset(&entry, 0, sizeof entry);
-	entry.dwSize = sizeof entry;
-	if (!Process32FirstW(snapshot, &entry)) {
-		CloseHandle(snapshot);
-		return;
-	}
-
-	do {
-		if (entry.th32ParentProcessID == parent_id) {
-			win32_pty_terminate_children(entry.th32ProcessID,
-			    exit_code);
-			win32_pty_terminate_process_id(entry.th32ProcessID,
-			    exit_code);
-		}
-	} while (Process32NextW(snapshot, &entry));
-
-	CloseHandle(snapshot);
-}
 
 static void
 win32_shutdown_socket(uintptr_t socket)
@@ -90,24 +70,38 @@ win32_pty_ignore_control(DWORD type)
 	return (TRUE);
 }
 
-int
-win32_pty_send_ctrl_break(struct win32_pty *pty)
-{
-	DWORD	pid;
-	BOOL	attached, generated, had_console;
+/*
+ * Global SRW lock to serialize Ctrl-Break console attach/detach
+ * operations.  FreeConsole/AttachConsole/SetConsoleCtrlHandler are
+ * process-wide state changes; concurrent calls from multiple threads
+ * (e.g. multiple panes sending Ctrl-C simultaneously) would corrupt
+ * the console attachment state.
+ */
+static SRWLOCK win32_ctrl_break_lock = SRWLOCK_INIT;
 
-	pid = pty->conpty.process_id;
+/*
+ * Internal: send Ctrl-Break to a PID while holding the SRW lock.
+ * Caller must NOT hold win32_ctrl_break_lock.
+ */
+static int
+win32_pty_send_ctrl_break_to_pid_locked(DWORD pid)
+{
+	BOOL	attached, generated, had_console, handler_installed;
+
 	if (pid == 0)
 		return (-1);
 
 	had_console = (GetConsoleWindow() != NULL);
-	SetConsoleCtrlHandler(win32_pty_ignore_control, TRUE);
+	handler_installed = SetConsoleCtrlHandler(win32_pty_ignore_control,
+	    TRUE);
 	FreeConsole();
 	attached = AttachConsole(pid);
 	if (!attached) {
+		/* Restore console state on failure. */
 		if (had_console)
 			AttachConsole(ATTACH_PARENT_PROCESS);
-		SetConsoleCtrlHandler(win32_pty_ignore_control, FALSE);
+		if (handler_installed)
+			SetConsoleCtrlHandler(win32_pty_ignore_control, FALSE);
 		return (-1);
 	}
 
@@ -116,18 +110,45 @@ win32_pty_send_ctrl_break(struct win32_pty *pty)
 	FreeConsole();
 	if (had_console)
 		AttachConsole(ATTACH_PARENT_PROCESS);
-	SetConsoleCtrlHandler(win32_pty_ignore_control, FALSE);
+	if (handler_installed)
+		SetConsoleCtrlHandler(win32_pty_ignore_control, FALSE);
 	return (generated ? 0 : -1);
 }
 
+/*
+ * Send Ctrl-Break to a process identified only by PID.
+ * Does not depend on struct win32_pty, so it can be called from
+ * worker threads that only hold a process_id.
+ * Serialized with a global SRW lock to prevent concurrent console
+ * attach/detach from corrupting process-wide state.
+ */
+int
+win32_pty_send_ctrl_break_to_pid(DWORD pid)
+{
+	int	rc;
+
+	AcquireSRWLockExclusive(&win32_ctrl_break_lock);
+	rc = win32_pty_send_ctrl_break_to_pid_locked(pid);
+	ReleaseSRWLockExclusive(&win32_ctrl_break_lock);
+	return (rc);
+}
+
+int
+win32_pty_send_ctrl_break(struct win32_pty *pty)
+{
+	if (pty == NULL)
+		return (-1);
+	return (win32_pty_send_ctrl_break_to_pid(pty->conpty.process_id));
+}
+
 static int
-win32_pty_write_input(struct win32_pty *pty, const char *buffer, int n)
+win32_pty_write_input(HANDLE input, const char *buffer, int n)
 {
 	DWORD	written;
 
 	while (n > 0) {
-		if (!WriteFile((HANDLE)pty->conpty.input, buffer, (DWORD)n,
-		    &written, NULL) || written == 0)
+		if (!WriteFile(input, buffer, (DWORD)n, &written, NULL) ||
+		    written == 0)
 			return (-1);
 		buffer += written;
 		n -= (int)written;
@@ -138,12 +159,15 @@ win32_pty_write_input(struct win32_pty *pty, const char *buffer, int n)
 static DWORD WINAPI
 win32_pty_socket_to_conpty(LPVOID data)
 {
-	struct win32_pty	*pty = data;
-	char			 buffer[WIN32_PTY_BUFFER];
-	int			 i, n, offset;
+	struct win32_pty_input_args	*args = data;
+	SOCKET				 bridge_socket = args->bridge_socket;
+	HANDLE				 input = args->input;
+	DWORD				 process_id = args->process_id;
+	char				 buffer[WIN32_PTY_BUFFER];
+	int				 i, n, offset;
 
 	for (;;) {
-		n = recv((SOCKET)pty->bridge_socket, buffer, sizeof buffer, 0);
+		n = recv(bridge_socket, buffer, sizeof buffer, 0);
 		if (n <= 0)
 			break;
 		offset = 0;
@@ -151,39 +175,42 @@ win32_pty_socket_to_conpty(LPVOID data)
 			if (buffer[i] != '\003')
 				continue;
 			if (i != offset &&
-			    win32_pty_write_input(pty, buffer + offset,
+			    win32_pty_write_input(input, buffer + offset,
 			    i - offset) != 0)
 				goto out;
-			if (win32_pty_write_input(pty, buffer + i, 1) != 0)
+			if (win32_pty_write_input(input, buffer + i, 1) != 0)
 				goto out;
-			win32_pty_send_ctrl_break(pty);
+			win32_pty_send_ctrl_break_to_pid(process_id);
 			offset = i + 1;
 		}
 		if (offset != n &&
-		    win32_pty_write_input(pty, buffer + offset, n - offset) != 0)
+		    win32_pty_write_input(input, buffer + offset,
+		    n - offset) != 0)
 			break;
 	}
 
 out:
-	win32_socket_shutdown_read(pty->bridge_socket);
+	win32_socket_shutdown_read((uintptr_t)bridge_socket);
 	return (0);
 }
 
 static DWORD WINAPI
 win32_pty_conpty_to_socket(LPVOID data)
 {
-	struct win32_pty	*pty = data;
-	char			 buffer[WIN32_PTY_BUFFER];
-	DWORD			 n;
-	int			 sent, offset;
+	struct win32_pty_output_args	*args = data;
+	SOCKET				 bridge_socket = args->bridge_socket;
+	HANDLE				 output = args->output;
+	char				 buffer[WIN32_PTY_BUFFER];
+	DWORD				 n;
+	int				 sent, offset;
 
 	for (;;) {
-		if (!ReadFile((HANDLE)pty->conpty.output, buffer, sizeof buffer,
-		    &n, NULL) || n == 0)
+		if (!ReadFile(output, buffer, sizeof buffer, &n, NULL) ||
+		    n == 0)
 			break;
 		offset = 0;
 		while (offset < (int)n) {
-			sent = send((SOCKET)pty->bridge_socket, buffer + offset,
+			sent = send(bridge_socket, buffer + offset,
 			    (int)n - offset, 0);
 			if (sent <= 0)
 				goto out;
@@ -192,7 +219,7 @@ win32_pty_conpty_to_socket(LPVOID data)
 	}
 
 out:
-	win32_socket_shutdown(pty->bridge_socket, 1);
+	win32_socket_shutdown((uintptr_t)bridge_socket, 1);
 	return (0);
 }
 
@@ -201,7 +228,9 @@ win32_pty_spawn(struct win32_pty *pty, const struct win32_pty_options *options,
     uintptr_t *master_socket)
 {
 	struct win32_pty_options	 defaults;
-	uintptr_t		 sockets[2];
+	struct win32_pty_input_args	*input_args = NULL;
+	struct win32_pty_output_args	*output_args = NULL;
+	uintptr_t			 sockets[2];
 
 	if (pty == NULL || master_socket == NULL) {
 		SetLastError(ERROR_INVALID_PARAMETER);
@@ -223,19 +252,52 @@ win32_pty_spawn(struct win32_pty *pty, const struct win32_pty_options *options,
 		goto fail;
 
 	pty->bridge_socket = sockets[1];
+
+	input_args = calloc(1, sizeof *input_args);
+	if (input_args == NULL)
+		goto fail;
+	input_args->bridge_socket = (SOCKET)pty->bridge_socket;
+	input_args->input = (HANDLE)pty->conpty.input;
+	input_args->process_id = pty->conpty.process_id;
+
+	output_args = calloc(1, sizeof *output_args);
+	if (output_args == NULL)
+		goto fail;
+	output_args->bridge_socket = (SOCKET)pty->bridge_socket;
+	output_args->output = (HANDLE)pty->conpty.output;
+
 	pty->input_thread = CreateThread(NULL, 0, win32_pty_socket_to_conpty,
-	    pty, 0, NULL);
+	    input_args, 0, NULL);
 	if (pty->input_thread == NULL)
 		goto fail;
+	/* Ownership of input_args transferred to input thread. */
+	input_args = NULL;
+
 	pty->output_thread = CreateThread(NULL, 0, win32_pty_conpty_to_socket,
-	    pty, 0, NULL);
-	if (pty->output_thread == NULL)
+	    output_args, 0, NULL);
+	if (pty->output_thread == NULL) {
+		/*
+		 * Output thread failed to create.  The input thread is
+		 * already running with its own args.  We must wait for it
+		 * to exit before cleaning up, since the close path will
+		 * shutdown the bridge socket which will cause the input
+		 * thread to exit.
+		 */
+		output_args->bridge_socket = INVALID_SOCKET;
+		output_args->output = NULL;
+		free(output_args);
+		output_args = NULL;
 		goto fail;
+	}
+	/* Ownership of output_args transferred to output thread. */
+	output_args = NULL;
 
 	*master_socket = sockets[0];
 	return (0);
 
 fail:
+	free(input_args);
+	free(output_args);
 	if (sockets[0] != (uintptr_t)INVALID_SOCKET)
 		win32_socket_close(sockets[0]);
 	if (sockets[1] != (uintptr_t)INVALID_SOCKET &&
@@ -304,7 +366,8 @@ win32_pty_terminate(struct win32_pty *pty, unsigned int exit_code)
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return (-1);
 	}
-	win32_pty_terminate_children(pty->conpty.process_id, exit_code);
+	win32_process_tree_terminate_children(pty->conpty.process_id,
+	    pty->conpty.process, exit_code);
 	if (pty->conpty.job != NULL) {
 		if (!TerminateJobObject((HANDLE)pty->conpty.job, exit_code))
 			return (-1);
@@ -319,25 +382,72 @@ void
 win32_pty_close(struct win32_pty *pty)
 {
 	uintptr_t	socket;
+	DWORD		result;
 
 	if (pty == NULL)
 		return;
 
 	socket = pty->bridge_socket;
+
+	/* Step 1: shutdown bridge socket to unblock worker recv/send. */
 	win32_shutdown_socket(socket);
-	if (pty->conpty.process != NULL)
-		WaitForSingleObject((HANDLE)pty->conpty.process, 1000);
-	win32_conpty_close(&pty->conpty);
+
+	/* Step 2: cancel synchronous IO on worker threads. */
+	if (pty->input_thread != NULL)
+		CancelSynchronousIo((HANDLE)pty->input_thread);
+	if (pty->output_thread != NULL)
+		CancelSynchronousIo((HANDLE)pty->output_thread);
+
+	/* Step 3: wait for child process. */
+	if (pty->conpty.process != NULL) {
+		result = WaitForSingleObject((HANDLE)pty->conpty.process, 1000);
+		if (result == WAIT_TIMEOUT) {
+			/*
+			 * Child process did not exit in time.  Do not
+			 * close ConPTY handles or memset the parent struct,
+			 * since the child and workers may still be using
+			 * them.  The caller must retry or use terminate.
+			 */
+			return;
+		}
+	}
+
+	/* Step 4: wait for IO worker threads. */
 	if (pty->input_thread != NULL) {
-		WaitForSingleObject((HANDLE)pty->input_thread, 1000);
+		result = WaitForSingleObject((HANDLE)pty->input_thread,
+		    WIN32_PTY_CLOSE_TIMEOUT_MS);
+		if (result != WAIT_OBJECT_0) {
+			/*
+			 * Input worker did not exit.  Do not close ConPTY
+			 * handles or memset — worker may still access them.
+			 */
+			return;
+		}
 		CloseHandle((HANDLE)pty->input_thread);
+		pty->input_thread = NULL;
 	}
 	if (pty->output_thread != NULL) {
-		WaitForSingleObject((HANDLE)pty->output_thread, 1000);
+		result = WaitForSingleObject((HANDLE)pty->output_thread,
+		    WIN32_PTY_CLOSE_TIMEOUT_MS);
+		if (result != WAIT_OBJECT_0) {
+			/*
+			 * Output worker did not exit.  Same reasoning:
+			 * do not release resources it may still use.
+			 */
+			return;
+		}
 		CloseHandle((HANDLE)pty->output_thread);
+		pty->output_thread = NULL;
 	}
+
+	/* Step 5: close ConPTY resources. */
+	win32_conpty_close(&pty->conpty);
+
+	/* Step 6: close bridge socket. */
 	if (socket != (uintptr_t)INVALID_SOCKET)
 		win32_socket_close(socket);
+
+	/* Step 7: zero the parent struct. */
 	memset(pty, 0, sizeof *pty);
 	pty->bridge_socket = (uintptr_t)INVALID_SOCKET;
 }
