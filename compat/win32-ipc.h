@@ -23,6 +23,19 @@
 #include <wchar.h>
 
 #define WIN32_IPC_TOKEN_SIZE 32
+#define WIN32_IPC_HANDSHAKE_TIMEOUT_SEC 5
+
+struct win32_ipc_listener;
+
+/*
+ * Callback invoked when a pending handshake completes (token valid)
+ * or fails (token invalid, timeout, or error).
+ *
+ * On success, socket_out points to the validated nonblocking socket.
+ * On failure, socket_out is INVALID_SOCKET and the handshake object
+ * has already been cleaned up.
+ */
+typedef void (*win32_ipc_handshake_cb)(uintptr_t socket_out, void *arg);
 
 struct win32_ipc_listener {
 	uintptr_t	 socket;
@@ -33,6 +46,8 @@ struct win32_ipc_listener {
 
 int	win32_ipc_listen(const char *, struct win32_ipc_listener *);
 int	win32_ipc_accept(struct win32_ipc_listener *, uintptr_t *);
+void	win32_ipc_accept_nonblocking(struct win32_ipc_listener *,
+	    win32_ipc_handshake_cb, void *);
 int	win32_ipc_connect(const char *, uintptr_t *);
 void	win32_ipc_listener_close(struct win32_ipc_listener *);
 

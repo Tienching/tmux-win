@@ -58,6 +58,7 @@ static struct event	 server_ev_accept;
 static struct event	 server_ev_tidy;
 #ifdef _WIN32
 static struct win32_ipc_listener server_ipc;
+static void	server_accept_handshake(uintptr_t, void *);
 #endif
 
 struct cmd_find_state	 marked_pane;
@@ -434,10 +435,7 @@ server_update_socket(void)
 static void
 server_accept(evutil_socket_t fd, short events, __unused void *data)
 {
-#ifdef _WIN32
-	imsg_fd_t		 newfd;
-	int			 error;
-#else
+#ifndef _WIN32
 	struct sockaddr_storage	 sa;
 	socklen_t		 slen = sizeof sa;
 	int			 newfd;
@@ -450,18 +448,9 @@ server_accept(evutil_socket_t fd, short events, __unused void *data)
 
 #ifdef _WIN32
 	(void)fd;
-	if (win32_ipc_accept(&server_ipc, &newfd) != 0) {
-		error = WSAGetLastError();
-		if (error == WSAEWOULDBLOCK || error == WSAEINTR ||
-		    error == WSAECONNABORTED || error == WSAEACCES)
-			return;
-		if (error == WSAEMFILE) {
-			server_add_accept(1);
-			return;
-		}
-		fatalx("accept failed: Windows error %lu, Winsock error %d",
-		    GetLastError(), error);
-	}
+	win32_ipc_accept_nonblocking(&server_ipc, server_accept_handshake,
+	    NULL);
+	return;
 #else
 	newfd = accept(fd, (struct sockaddr *) &sa, &slen);
 	if (newfd == -1) {
@@ -478,10 +467,37 @@ server_accept(evutil_socket_t fd, short events, __unused void *data)
 
 	if (server_exit) {
 #ifdef _WIN32
-		win32_socket_close(newfd);
+		/* Handled in handshake callback. */
 #else
 		close(newfd);
 #endif
+		return;
+	}
+#ifndef _WIN32
+	c = server_client_create(newfd);
+	if (!server_acl_join(c)) {
+		c->exit_message = xstrdup("access not allowed");
+		c->flags |= CLIENT_EXIT;
+	}
+#endif
+}
+
+/*
+ * Windows nonblocking IPC handshake callback.
+ * Called when a pending client connection completes token validation
+ * or times out.
+ */
+#ifdef _WIN32
+static void
+server_accept_handshake(uintptr_t newfd, __unused void *arg)
+{
+	struct client	*c;
+
+	if (newfd == (uintptr_t)INVALID_SOCKET)
+		return;
+
+	if (server_exit) {
+		win32_socket_close(newfd);
 		return;
 	}
 	c = server_client_create(newfd);
@@ -490,6 +506,7 @@ server_accept(evutil_socket_t fd, short events, __unused void *data)
 		c->flags |= CLIENT_EXIT;
 	}
 }
+#endif
 
 /*
  * Add accept event. If timeout is nonzero, add as a timeout instead of a read

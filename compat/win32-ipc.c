@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tmux.h"
 #include "win32-command.h"
 #include "win32-ipc.h"
 
@@ -53,6 +54,21 @@ struct win32_ipc_security {
 	SECURITY_DESCRIPTOR	 descriptor;
 	ACL			*acl;
 	TOKEN_USER		*user;
+};
+
+/*
+ * Pending handshake object for nonblocking token validation.
+ * Allocated per accepted connection that hasn't yet sent a valid token.
+ */
+struct win32_ipc_pending {
+	SOCKET			 socket;
+	struct win32_ipc_listener	*listener;
+	unsigned char		 got[WIN32_IPC_TOKEN_SIZE];
+	size_t			 got_len;
+	struct event		 read_event;
+	struct event		 timer_event;
+	win32_ipc_handshake_cb	 callback;
+	void			*callback_arg;
 };
 
 static BOOL CALLBACK
@@ -216,15 +232,18 @@ win32_ipc_write_endpoint(const wchar_t *path, unsigned short port,
     const unsigned char *token)
 {
 	struct win32_ipc_security security;
-	HANDLE	file;
+	HANDLE	file = INVALID_HANDLE_VALUE;
 	DWORD	written;
 	char	token_hex[WIN32_IPC_TOKEN_SIZE * 2 + 1];
 	char	endpoint[WIN32_IPC_ENDPOINT_MAX];
-	int	n;
+	wchar_t	*dir = NULL, *tmp = NULL;
+	size_t	path_len, dir_len;
+	int	n, retval = -1;
 
 	win32_ipc_token_to_hex(token, token_hex);
-	n = snprintf(endpoint, sizeof endpoint, "%s%u\n%s\n",
-	    WIN32_IPC_MAGIC, (u_int)port, token_hex);
+	n = snprintf(endpoint, sizeof endpoint, "%s%u\n%lu\n%s\n",
+	    WIN32_IPC_MAGIC, (u_int)port,
+	    (unsigned long)GetCurrentProcessId(), token_hex);
 	if (n <= 0 || (size_t)n >= sizeof endpoint) {
 		SetLastError(ERROR_INSUFFICIENT_BUFFER);
 		return (-1);
@@ -232,30 +251,79 @@ win32_ipc_write_endpoint(const wchar_t *path, unsigned short port,
 	if (win32_ipc_security_init(&security) != 0)
 		return (-1);
 
-	DeleteFileW(path);
-	file = CreateFileW(path, GENERIC_WRITE, 0, &security.attributes,
+	/* Build temp file path in the same directory as the target. */
+	path_len = wcslen(path);
+	dir = malloc((path_len + 1) * sizeof(wchar_t));
+	if (dir == NULL) {
+		win32_ipc_security_free(&security);
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return (-1);
+	}
+	wcscpy(dir, path);
+	for (dir_len = path_len; dir_len > 0; dir_len--) {
+		if (dir[dir_len - 1] == L'\\' || dir[dir_len - 1] == L'/') {
+			dir[dir_len] = L'\0';
+			break;
+		}
+	}
+	if (dir_len == 0) {
+		dir[0] = L'.';
+		dir[1] = L'\\';
+		dir[2] = L'\0';
+		dir_len = 2;
+	}
+	tmp = malloc((dir_len + 32) * sizeof(wchar_t));
+	if (tmp == NULL) {
+		win32_ipc_security_free(&security);
+		free(dir);
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return (-1);
+	}
+	_snwprintf(tmp, dir_len + 32, L"%stmux-ep-%lu.tmp", dir,
+	    (unsigned long)GetCurrentProcessId());
+
+	file = CreateFileW(tmp, GENERIC_WRITE, 0, &security.attributes,
 	    CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
 	win32_ipc_security_free(&security);
 	if (file == INVALID_HANDLE_VALUE)
-		return (-1);
+		goto cleanup;
 	if (!WriteFile(file, endpoint, (DWORD)n, &written, NULL) ||
 	    written != (DWORD)n) {
 		CloseHandle(file);
-		return (-1);
+		DeleteFileW(tmp);
+		goto cleanup;
+	}
+	if (!FlushFileBuffers(file)) {
+		CloseHandle(file);
+		DeleteFileW(tmp);
+		goto cleanup;
 	}
 	CloseHandle(file);
-	return (0);
+	file = INVALID_HANDLE_VALUE;
+
+	if (!MoveFileExW(tmp, path,
+	    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		goto cleanup;
+
+	retval = 0;
+
+cleanup:
+	if (retval != 0 && tmp != NULL)
+		DeleteFileW(tmp);
+	free(tmp);
+	free(dir);
+	return (retval);
 }
 
 static int
 win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
     unsigned char *token)
 {
-	HANDLE		file;
+	HANDLE		file, process;
 	LARGE_INTEGER	size;
 	DWORD		read;
-	char		*buffer, *end;
-	unsigned long	value;
+	char		*buffer, *end, *pid_end;
+	unsigned long	value, pid;
 	size_t		magic_len = strlen(WIN32_IPC_MAGIC);
 	int		retval = -1;
 
@@ -291,8 +359,27 @@ win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
 		goto bad_format;
 	while (*end == '\n' || *end == '\r')
 		end++;
-	if (win32_ipc_token_from_hex(end, token) != 0)
+
+	/* Parse PID field. */
+	pid = strtoul(end, &pid_end, 10);
+	if (pid_end == end || pid == 0 ||
+	    (*pid_end != '\n' && *pid_end != '\r' && *pid_end != '\0'))
 		goto bad_format;
+	while (*pid_end == '\n' || *pid_end == '\r')
+		pid_end++;
+
+	if (win32_ipc_token_from_hex(pid_end, token) != 0)
+		goto bad_format;
+
+	/* Verify the PID is still alive. */
+	process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+	    (DWORD)pid);
+	if (process == NULL) {
+		SetLastError(ERROR_NOT_FOUND);
+		free(buffer);
+		return (-1);
+	}
+	CloseHandle(process);
 
 	*port = (unsigned short)value;
 	retval = 0;
@@ -403,6 +490,161 @@ fail:
 	return (-1);
 }
 
+/*
+ * Free a pending handshake object and close its socket if still open.
+ */
+static void
+win32_ipc_pending_free(struct win32_ipc_pending *pending)
+{
+	if (pending == NULL)
+		return;
+	if (event_initialized(&pending->read_event))
+		event_del(&pending->read_event);
+	if (event_initialized(&pending->timer_event))
+		event_del(&pending->timer_event);
+	if (pending->socket != INVALID_SOCKET)
+		closesocket(pending->socket);
+	free(pending);
+}
+
+/*
+ * libevent read callback: called when data is available on the
+ * pending socket.  Reads available bytes, appends to the token
+ * buffer, and validates when the full token has been received.
+ */
+static void
+win32_ipc_pending_read_cb(__unused evutil_socket_t fd,
+    __unused short events, void *arg)
+{
+	struct win32_ipc_pending	*pending = arg;
+	int				 n;
+	size_t				 remaining;
+	uintptr_t			 validated_socket;
+	win32_ipc_handshake_cb	 callback;
+	void			*callback_arg;
+
+	remaining = WIN32_IPC_TOKEN_SIZE - pending->got_len;
+	n = recv(pending->socket,
+	    (char *)(pending->got + pending->got_len),
+	    (int)remaining, 0);
+	if (n <= 0) {
+		/* Connection closed or error before token complete. */
+		callback = pending->callback;
+		callback_arg = pending->callback_arg;
+		win32_ipc_pending_free(pending);
+		callback((uintptr_t)INVALID_SOCKET, callback_arg);
+		return;
+	}
+	pending->got_len += (size_t)n;
+
+	if (pending->got_len < WIN32_IPC_TOKEN_SIZE)
+		return; /* Need more data. */
+
+	/* Full token received — validate. */
+	if (memcmp(pending->got, pending->listener->token,
+	    WIN32_IPC_TOKEN_SIZE) != 0) {
+		callback = pending->callback;
+		callback_arg = pending->callback_arg;
+		win32_ipc_pending_free(pending);
+		callback((uintptr_t)INVALID_SOCKET, callback_arg);
+		return;
+	}
+
+	/* Token valid — deliver the socket. */
+	validated_socket = (uintptr_t)pending->socket;
+	pending->socket = INVALID_SOCKET; /* Prevent double close. */
+	callback = pending->callback;
+	callback_arg = pending->callback_arg;
+	win32_ipc_pending_free(pending);
+	callback(validated_socket, callback_arg);
+}
+
+/*
+ * libevent timer callback: called when the handshake times out.
+ */
+static void
+win32_ipc_pending_timer_cb(__unused evutil_socket_t fd,
+    __unused short events, void *arg)
+{
+	struct win32_ipc_pending	*pending = arg;
+	win32_ipc_handshake_cb		 callback;
+	void			*callback_arg;
+
+	callback = pending->callback;
+	callback_arg = pending->callback_arg;
+	win32_ipc_pending_free(pending);
+	callback((uintptr_t)INVALID_SOCKET, callback_arg);
+}
+
+/*
+ * Nonblocking accept: accept a connection, set it nonblocking,
+ * register a libevent read event for token validation, and a
+ * timeout event.  Returns immediately.  The callback is invoked
+ * when the handshake succeeds or fails.
+ *
+ * Uses event_set() to work with the global event base that tmux
+ * uses via the deprecated event_loop() API.
+ */
+void
+win32_ipc_accept_nonblocking(struct win32_ipc_listener *listener,
+    win32_ipc_handshake_cb callback, void *callback_arg)
+{
+	struct win32_ipc_pending	*pending = NULL;
+	SOCKET				 sock;
+	u_long				 mode;
+	struct timeval			 tv;
+
+	sock = accept((SOCKET)listener->socket, NULL, NULL);
+	if (sock == INVALID_SOCKET) {
+		callback((uintptr_t)INVALID_SOCKET, callback_arg);
+		return;
+	}
+
+	/* Set nonblocking immediately. */
+	mode = 1;
+	if (ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR) {
+		closesocket(sock);
+		callback((uintptr_t)INVALID_SOCKET, callback_arg);
+		return;
+	}
+
+	pending = calloc(1, sizeof *pending);
+	if (pending == NULL) {
+		closesocket(sock);
+		callback((uintptr_t)INVALID_SOCKET, callback_arg);
+		return;
+	}
+	pending->socket = sock;
+	pending->listener = listener;
+	pending->got_len = 0;
+	pending->callback = callback;
+	pending->callback_arg = callback_arg;
+
+	/* Register read event for token validation. */
+	event_set(&pending->read_event, (evutil_socket_t)sock,
+	    EV_READ | EV_PERSIST, win32_ipc_pending_read_cb, pending);
+	if (event_add(&pending->read_event, NULL) != 0) {
+		win32_ipc_pending_free(pending);
+		callback((uintptr_t)INVALID_SOCKET, callback_arg);
+		return;
+	}
+
+	/* Register timeout event. */
+	tv.tv_sec = WIN32_IPC_HANDSHAKE_TIMEOUT_SEC;
+	tv.tv_usec = 0;
+	evtimer_set(&pending->timer_event, win32_ipc_pending_timer_cb,
+	    pending);
+	if (event_add(&pending->timer_event, &tv) != 0) {
+		win32_ipc_pending_free(pending);
+		callback((uintptr_t)INVALID_SOCKET, callback_arg);
+		return;
+	}
+}
+
+/*
+ * Legacy blocking accept — kept for compatibility but should not
+ * be used in the server event loop.  Still used by some test paths.
+ */
 int
 win32_ipc_accept(struct win32_ipc_listener *listener, uintptr_t *socket_out)
 {
