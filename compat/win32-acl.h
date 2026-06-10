@@ -31,14 +31,13 @@
 
 /*
  * Build a SECURITY_ATTRIBUTES that grants GENERIC_ALL only to the current
- * owner (NFR-6, design sec 5). The descriptor is allocated by Windows;
- * caller releases it via win32_acl_owner_only_free().
+ * token user (NFR-6, design sec 5). The descriptor is allocated by the
+ * implementation; caller releases it via win32_acl_owner_only_free().
  *
- * Internally uses ConvertStringSecurityDescriptorToSecurityDescriptorW
- * with the SDDL string "D:(A;;GA;;;OW)" (DACL = allow GENERIC_ALL to
- * Owner). Compared to building an explicit ACE with GetTokenInformation
- * (compat/win32-ipc.c::win32_ipc_security_init), the SDDL approach is
- * three orders of magnitude cheaper to set up and avoids a double malloc.
+ * Opens the current process token to obtain the user SID, then builds
+ * the DACL with AddAccessAllowedAce using that SID directly. The DACL
+ * contains the current token user's SID explicitly, matching the
+ * intended per-user tmux endpoint boundary.
  */
 int	win32_acl_owner_only(SECURITY_ATTRIBUTES *attrs);
 void	win32_acl_owner_only_free(SECURITY_ATTRIBUTES *attrs);
