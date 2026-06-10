@@ -1778,7 +1778,7 @@ server_client_reset_state(struct client *c)
 	struct window_pane	*wp = server_client_get_pane(c), *loop;
 	struct screen		*s = NULL;
 	struct options		*oo = c->session->options;
-	int			 mode = 0, cursor, flags;
+	int			 mode = 0, cursor, flags, sync_console_cursor = 0;
 	u_int			 cx = 0, cy = 0, ox, oy, sx, sy, n;
 
 	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED))
@@ -1820,6 +1820,7 @@ server_client_reset_state(struct client *c)
 				cy = tty->sy - 1;
 		}
 		cx = c->prompt_cursor;
+		sync_console_cursor = 1;
 	} else if (c->overlay_draw == NULL) {
 		cursor = 0;
 		tty_window_offset(tty, &ox, &oy, &sx, &sy);
@@ -1832,10 +1833,12 @@ server_client_reset_state(struct client *c)
 
 			if (status_at_line(c) == 0)
 				cy += status_line_size(c);
+			sync_console_cursor = 1;
 		}
 		if (!cursor)
 			mode &= ~MODE_CURSOR;
-	}
+	} else if (c->overlay_mode != NULL)
+		sync_console_cursor = 1;
 	log_debug("%s: cursor to %u,%u", __func__, cx, cy);
 	tty_cursor(tty, cx, cy);
 
@@ -1868,6 +1871,19 @@ server_client_reset_state(struct client *c)
 
 	/* All writing must be done, send a sync end (if it was started). */
 	tty_sync_end(tty);
+#ifdef _WIN32
+	/*
+	 * Windows IME uses the real console cursor, not the TUI-drawn cursor.
+	 * Sync it after output is flushed so composition popups align with input.
+	 */
+	if (sync_console_cursor && c->win32_stdio_bridge != NULL &&
+	    (tty->flags & TTY_STARTED)) {
+		struct win32_stdio_bridge	*bridge = c->win32_stdio_bridge;
+
+		tty_flush_output(tty);
+		win32_stdio_bridge_sync_console_cursor(bridge, cx, cy);
+	}
+#endif
 	tty->flags |= flags;
 }
 
@@ -2540,7 +2556,7 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 			if (handle.flags & WIN32_HANDLE_MESSAGE_CONSOLE)
 				c->win32_stdin_console = 1;
 			c->fd = win32_handle_message_to_fd(&handle,
-			    _O_RDONLY|_O_BINARY);
+			    _O_RDONLY|_O_BINARY, (DWORD)c->pid);
 		} else if (datalen == 0)
 			c->fd = -1;
 		else
@@ -2557,7 +2573,7 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 		if (datalen == sizeof handle) {
 			memcpy(&handle, data, sizeof handle);
 			c->out_fd = win32_handle_message_to_fd(&handle,
-			    _O_WRONLY|_O_BINARY);
+			    _O_WRONLY|_O_BINARY, (DWORD)c->pid);
 		} else if (datalen == 0)
 			c->out_fd = -1;
 		else

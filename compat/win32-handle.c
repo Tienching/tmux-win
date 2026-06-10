@@ -65,10 +65,11 @@ win32_handle_message_from_fd(int fd, struct win32_handle_message *message)
 
 int
 win32_handle_message_to_fd(const struct win32_handle_message *message,
-    int flags)
+    int flags, DWORD expected_pid)
 {
-	HANDLE	process, target = NULL;
-	int	fd;
+	HANDLE		process, target = NULL;
+	DWORD		file_type, desired_access;
+	int		fd;
 
 	if (message == NULL || message->process_id == 0 ||
 	    message->handle == 0) {
@@ -76,15 +77,72 @@ win32_handle_message_to_fd(const struct win32_handle_message *message,
 		return (-1);
 	}
 
+	/* Verify the process_id matches the authenticated client PID. */
+	if (expected_pid != 0 && message->process_id != expected_pid) {
+		SetLastError(ERROR_ACCESS_DENIED);
+		return (-1);
+	}
+
 	process = OpenProcess(PROCESS_DUP_HANDLE, FALSE, message->process_id);
 	if (process == NULL)
 		return (-1);
+
+	/*
+	 * First, duplicate with DUPLICATE_SAME_ACCESS so we can inspect
+	 * the handle type, then we will re-duplicate with restricted access.
+	 */
 	if (!DuplicateHandle(process, (HANDLE)(uintptr_t)message->handle,
 	    GetCurrentProcess(), &target, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
 		CloseHandle(process);
 		return (-1);
 	}
 	CloseHandle(process);
+
+	/* Verify the handle type is one we allow: pipe, file, or console. */
+	file_type = GetFileType(target);
+	if (file_type == FILE_TYPE_UNKNOWN) {
+		CloseHandle(target);
+		SetLastError(ERROR_INVALID_HANDLE);
+		return (-1);
+	}
+
+	/*
+	 * Re-duplicate with restricted access rights based on handle type.
+	 * This prevents handles with overly broad access (e.g. GENERIC_ALL,
+	 * PROCESS_ALL_ACCESS, WRITE_DAC, WRITE_OWNER) from being accepted.
+	 * The whitelist per handle type:
+	 *   Pipe:  generic read/write, synchronize
+	 *   File:  generic read/write, synchronize, read attributes
+	 *   Console (char): generic read/write, synchronize
+	 */
+	switch (file_type) {
+	case FILE_TYPE_PIPE:
+		desired_access = GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE;
+		break;
+	case FILE_TYPE_DISK:
+		desired_access = GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE |
+		    FILE_READ_ATTRIBUTES;
+		break;
+	case FILE_TYPE_CHAR:
+		desired_access = GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE;
+		break;
+	default:
+		CloseHandle(target);
+		SetLastError(ERROR_ACCESS_DENIED);
+		return (-1);
+	}
+	{
+		HANDLE	restricted = NULL;
+		if (!DuplicateHandle(GetCurrentProcess(), target,
+		    GetCurrentProcess(), &restricted, desired_access, FALSE,
+		    0)) {
+			CloseHandle(target);
+			SetLastError(ERROR_ACCESS_DENIED);
+			return (-1);
+		}
+		CloseHandle(target);
+		target = restricted;
+	}
 
 	fd = _open_osfhandle((intptr_t)target, flags | _O_NOINHERIT);
 	if (fd == -1) {
