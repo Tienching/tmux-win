@@ -49,7 +49,7 @@ int		win32_process_exited(const struct win32_process *,
 int		win32_process_wait(struct win32_process *, unsigned long,
 		    unsigned long *);
 int		win32_process_terminate(struct win32_process *, unsigned int);
-void		win32_process_close(struct win32_process *);
+int		win32_process_close(struct win32_process *);
 unsigned long	win32_process_id(const struct win32_process *);
 
 /*

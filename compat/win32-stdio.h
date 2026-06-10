@@ -22,6 +22,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * Shared cursor state between the main thread and the stdio output worker.
+ * The bridge holds a pointer; the output worker holds its own pointer.
+ * The bridge close path waits for the worker to exit before freeing this.
+ */
+struct win32_stdio_cursor {
+	CRITICAL_SECTION	 lock;
+	short			 pending_x;
+	short			 pending_y;
+	int			 pending_valid;
+	HANDLE			 console_handle;
+};
+
 struct win32_stdio_bridge {
 	int		input_fd;
 	int		output_fd;
@@ -34,18 +47,14 @@ struct win32_stdio_bridge {
 	unsigned long	input_mode;
 	unsigned long	output_mode;
 	unsigned int	input_codepage;
+	unsigned int	output_codepage_valid;
 	unsigned int	output_codepage;
 	int		input_mode_valid;
 	int		output_mode_valid;
 	int		input_codepage_valid;
-	int		output_codepage_valid;
 	int		input_console;
 	int		output_console;
-	void		*output_console_handle;
-	void		*cursor_lock;
-	short		pending_cursor_x;
-	short		pending_cursor_y;
-	int		pending_cursor_valid;
+	struct win32_stdio_cursor	*cursor;
 };
 
 int	win32_stdio_bridge_open(struct win32_stdio_bridge *, int, int,
@@ -58,7 +67,7 @@ int	win32_stdio_bridge_feed_input(struct win32_stdio_bridge *, const void *,
 void	win32_stdio_bridge_restore_terminal(struct win32_stdio_bridge *);
 void	win32_stdio_bridge_sync_console_cursor(struct win32_stdio_bridge *, unsigned int,
 	    unsigned int);
-void	win32_stdio_bridge_close(struct win32_stdio_bridge *);
+int	win32_stdio_bridge_close(struct win32_stdio_bridge *);
 
 #endif
 
