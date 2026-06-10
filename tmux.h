@@ -2695,6 +2695,9 @@ void	tty_reset(struct tty *);
 void	tty_region_off(struct tty *);
 void	tty_margin_off(struct tty *);
 void	tty_cursor(struct tty *, u_int, u_int);
+#ifdef _WIN32
+void	tty_flush_output(struct tty *);
+#endif
 int	tty_fake_bce(const struct tty *, const struct grid_cell *, u_int);
 void	tty_repeat_space(struct tty *, u_int);
 void	tty_clipboard_query(struct tty *);

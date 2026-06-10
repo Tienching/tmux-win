@@ -20,6 +20,7 @@
 #ifdef _WIN32
 
 #include <stdint.h>
+#include <windows.h>
 
 /* The source handle is a Windows console input or output handle. */
 #define WIN32_HANDLE_MESSAGE_CONSOLE 0x1
@@ -33,7 +34,8 @@ struct win32_handle_message {
 int	win32_handle_message_from_handle(void *, int,
 	    struct win32_handle_message *);
 int	win32_handle_message_from_fd(int, struct win32_handle_message *);
-int	win32_handle_message_to_fd(const struct win32_handle_message *, int);
+int	win32_handle_message_to_fd(const struct win32_handle_message *, int,
+	    DWORD);
 
 #endif
 
