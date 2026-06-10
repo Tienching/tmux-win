@@ -24,6 +24,7 @@
 
 #include <io.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "win32-socketpair.h"
@@ -50,6 +51,8 @@ win32_stdio_close_fd(int *fd)
 	}
 }
 
+static int	win32_stdio_fd_handle(int, HANDLE *);
+
 static void
 win32_stdio_close_socket(uintptr_t *socket)
 {
@@ -58,6 +61,45 @@ win32_stdio_close_socket(uintptr_t *socket)
 		win32_socket_close(*socket);
 		*socket = (uintptr_t)INVALID_SOCKET;
 	}
+}
+
+static void
+win32_stdio_apply_console_cursor(struct win32_stdio_bridge *bridge)
+{
+	HANDLE				 handle;
+	CONSOLE_SCREEN_BUFFER_INFO	 info;
+	COORD				 pos;
+	SHORT				 maxx, maxy;
+
+	if (bridge == NULL || !bridge->output_console ||
+	    bridge->output_console_handle == NULL)
+		return;
+
+	EnterCriticalSection((CRITICAL_SECTION *)bridge->cursor_lock);
+	if (!bridge->pending_cursor_valid) {
+		LeaveCriticalSection((CRITICAL_SECTION *)bridge->cursor_lock);
+		return;
+	}
+	pos.X = bridge->pending_cursor_x;
+	pos.Y = bridge->pending_cursor_y;
+	bridge->pending_cursor_valid = 0;
+	LeaveCriticalSection((CRITICAL_SECTION *)bridge->cursor_lock);
+
+	handle = (HANDLE)bridge->output_console_handle;
+	if (!GetConsoleScreenBufferInfo(handle, &info))
+		return;
+
+	maxx = info.srWindow.Right - info.srWindow.Left;
+	maxy = info.srWindow.Bottom - info.srWindow.Top;
+	if (pos.X < 0)
+		pos.X = 0;
+	else if (pos.X > maxx)
+		pos.X = maxx;
+	if (pos.Y < 0)
+		pos.Y = 0;
+	else if (pos.Y > maxy)
+		pos.Y = maxy;
+	SetConsoleCursorPosition(handle, pos);
 }
 
 static DWORD WINAPI
@@ -153,6 +195,7 @@ win32_stdio_output_thread(LPVOID data)
 				offset += (int)written;
 			}
 		}
+		win32_stdio_apply_console_cursor(bridge);
 	}
 
 out:
@@ -175,6 +218,10 @@ win32_stdio_bridge_open(struct win32_stdio_bridge *bridge, int input_fd,
 		return (-1);
 	}
 	memset(bridge, 0, sizeof *bridge);
+	bridge->cursor_lock = malloc(sizeof(CRITICAL_SECTION));
+	if (bridge->cursor_lock == NULL)
+		goto fail;
+	InitializeCriticalSection((CRITICAL_SECTION *)bridge->cursor_lock);
 	bridge->input_fd = -1;
 	bridge->output_fd = -1;
 	bridge->input_socket = (uintptr_t)INVALID_SOCKET;
@@ -188,6 +235,11 @@ win32_stdio_bridge_open(struct win32_stdio_bridge *bridge, int input_fd,
 	if (input_console || (input_handle != INVALID_HANDLE_VALUE &&
 	    GetConsoleMode(input_handle, &mode)))
 		bridge->input_console = 1;
+	if (win32_stdio_fd_handle(output_fd, &input_handle) == 0 &&
+	    GetConsoleMode(input_handle, &mode)) {
+		bridge->output_console = 1;
+		bridge->output_console_handle = input_handle;
+	}
 
 	if (win32_socketpair(input_pair) != 0)
 		goto fail;
@@ -348,6 +400,22 @@ win32_stdio_bridge_prepare_terminal(struct win32_stdio_bridge *bridge)
 }
 
 void
+win32_stdio_bridge_sync_console_cursor(struct win32_stdio_bridge *bridge,
+    unsigned int x, unsigned int y)
+{
+	if (bridge == NULL || !bridge->output_console)
+		return;
+
+	EnterCriticalSection((CRITICAL_SECTION *)bridge->cursor_lock);
+	bridge->pending_cursor_x = (SHORT)x;
+	bridge->pending_cursor_y = (SHORT)y;
+	bridge->pending_cursor_valid = 1;
+	LeaveCriticalSection((CRITICAL_SECTION *)bridge->cursor_lock);
+
+	win32_stdio_apply_console_cursor(bridge);
+}
+
+void
 win32_stdio_bridge_restore_terminal(struct win32_stdio_bridge *bridge)
 {
 	HANDLE	handle;
@@ -378,10 +446,20 @@ win32_stdio_bridge_restore_terminal(struct win32_stdio_bridge *bridge)
 void
 win32_stdio_bridge_close(struct win32_stdio_bridge *bridge)
 {
+	DWORD	result;
+
 	if (bridge == NULL)
 		return;
 
 	win32_stdio_bridge_restore_terminal(bridge);
+	if (bridge->cursor_lock != NULL) {
+		DeleteCriticalSection((CRITICAL_SECTION *)bridge->cursor_lock);
+		free(bridge->cursor_lock);
+		bridge->cursor_lock = NULL;
+	}
+	bridge->pending_cursor_valid = 0;
+	bridge->output_console_handle = NULL;
+	bridge->output_console = 0;
 	win32_stdio_close_socket(&bridge->input_socket);
 	win32_stdio_close_socket(&bridge->output_socket);
 	win32_stdio_close_socket(&bridge->input_bridge_socket);
@@ -391,12 +469,27 @@ win32_stdio_bridge_close(struct win32_stdio_bridge *bridge)
 	if (bridge->output_thread != NULL)
 		CancelSynchronousIo((HANDLE)bridge->output_thread);
 	if (bridge->input_thread != NULL) {
-		WaitForSingleObject((HANDLE)bridge->input_thread, 1000);
+		result = WaitForSingleObject((HANDLE)bridge->input_thread, 5000);
+		if (result != WAIT_OBJECT_0) {
+			/*
+			 * Input worker did not exit in time.  Do not close
+			 * fd or memset — worker may still access them.
+			 */
+			return;
+		}
 		CloseHandle((HANDLE)bridge->input_thread);
 		bridge->input_thread = NULL;
 	}
 	if (bridge->output_thread != NULL) {
-		WaitForSingleObject((HANDLE)bridge->output_thread, 1000);
+		result = WaitForSingleObject((HANDLE)bridge->output_thread, 5000);
+		if (result != WAIT_OBJECT_0) {
+			/*
+			 * Output worker did not exit in time.  Same
+			 * reasoning: do not release resources it may
+			 * still use.
+			 */
+			return;
+		}
 		CloseHandle((HANDLE)bridge->output_thread);
 		bridge->output_thread = NULL;
 	}
