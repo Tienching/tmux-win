@@ -276,7 +276,7 @@ win32d_write_endpoint(struct win32_daemon_handle *handle,
 	    handle->pipe_evt_name);
 	win32d_format_iso8601_utc(record.started_at);
 	swprintf_s(record.tmux_version, WIN32_ENDPOINT_VERSION_STR_MAX,
-	    L"%hs", "win-port-rc1");
+	    L"%hs", "win-port-rc2");
 
 	if (win32_endpoint_write_atomic(path, &record) != 0)
 		goto out;

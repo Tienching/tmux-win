@@ -352,6 +352,7 @@ server_client_open_win32_stdio(struct client *c)
 {
 	if (c->win32_stdio_bridge != NULL)
 		return (0);
+	log_debug("client %p win32_stdio: fd=%d out_fd=%d", c, c->fd, c->out_fd);
 	if (c->fd == -1 || c->out_fd == -1)
 		return (-1);
 
@@ -2555,13 +2556,20 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 #ifdef _WIN32
 		if (datalen == sizeof handle) {
 			memcpy(&handle, data, sizeof handle);
+			log_debug("client %p IDENTIFY_STDIN: pid=%lu handle=0x%llx flags=0x%x",
+			    c, (unsigned long)handle.process_id,
+			    (unsigned long long)handle.handle,
+			    (unsigned)handle.flags);
 			if (handle.flags & WIN32_HANDLE_MESSAGE_CONSOLE)
 				c->win32_stdin_console = 1;
 			c->fd = win32_handle_message_to_fd(&handle,
 			    _O_RDONLY|_O_BINARY, (DWORD)c->pid);
-		} else if (datalen == 0)
+			log_debug("client %p IDENTIFY_STDIN fd=%d err=%lu",
+			    c, c->fd, GetLastError());
+		} else if (datalen == 0) {
+			log_debug("client %p IDENTIFY_STDIN: no handle (datalen=0)", c);
 			c->fd = -1;
-		else
+		} else
 			return (-1);
 #else
 		if (datalen != 0)
@@ -2574,11 +2582,18 @@ server_client_dispatch_identify(struct client *c, struct imsg *imsg)
 #ifdef _WIN32
 		if (datalen == sizeof handle) {
 			memcpy(&handle, data, sizeof handle);
+			log_debug("client %p IDENTIFY_STDOUT: pid=%lu handle=0x%llx flags=0x%x",
+			    c, (unsigned long)handle.process_id,
+			    (unsigned long long)handle.handle,
+			    (unsigned)handle.flags);
 			c->out_fd = win32_handle_message_to_fd(&handle,
 			    _O_WRONLY|_O_BINARY, (DWORD)c->pid);
-		} else if (datalen == 0)
+			log_debug("client %p IDENTIFY_STDOUT fd=%d err=%lu",
+			    c, c->out_fd, GetLastError());
+		} else if (datalen == 0) {
+			log_debug("client %p IDENTIFY_STDOUT: no handle (datalen=0)", c);
 			c->out_fd = -1;
-		else
+		} else
 			return (-1);
 #else
 		if (datalen != 0)

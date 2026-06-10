@@ -110,6 +110,21 @@ tty_client_write_fd(struct client *c)
 {
 	return ((evutil_socket_t)c->win32_out_fd);
 }
+
+void
+tty_flush_output(struct tty *tty)
+{
+	struct client	*c = tty->client;
+	int		 nwrite;
+
+	if (tty->out == NULL)
+		return;
+	while (EVBUFFER_LENGTH(tty->out) != 0) {
+		nwrite = evbuffer_write(tty->out, tty_client_write_fd(c));
+		if (nwrite <= 0)
+			break;
+	}
+}
 #endif
 
 void
