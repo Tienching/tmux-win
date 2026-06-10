@@ -23,6 +23,7 @@
 
 wchar_t	*win32_utf8_to_wide(const char *);
 wchar_t	*win32_utf8_to_wide_path(const char *);
+char	*win32_wide_to_utf8_path(const wchar_t *);
 wchar_t	*win32_build_command_line(int, char *const *);
 wchar_t	*win32_build_command_line_wide(int, const wchar_t *const *);
 int	 win32_shell_is_cmd(const char *);

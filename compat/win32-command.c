@@ -308,6 +308,32 @@ win32_utf8_to_wide_path(const char *s)
 	return (extended);
 }
 
+char *
+win32_wide_to_utf8_path(const wchar_t *wide)
+{
+	int	 n;
+	char	*utf8;
+
+	if (wide == NULL) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return (NULL);
+	}
+	n = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+	if (n <= 0)
+		return (NULL);
+	utf8 = calloc((size_t)n, sizeof *utf8);
+	if (utf8 == NULL) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return (NULL);
+	}
+	if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, n, NULL,
+	    NULL) == 0) {
+		free(utf8);
+		return (NULL);
+	}
+	return (utf8);
+}
+
 wchar_t *
 win32_build_command_line_wide(int argc, const wchar_t *const *argv)
 {

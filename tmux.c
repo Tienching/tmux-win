@@ -50,6 +50,7 @@
 
 #ifdef _WIN32
 #include "compat/win32-command.h"
+#include "compat/win32-endpoint.h"
 #include "compat/win32-socketpair.h"
 #ifndef PATH_MAX
 #define PATH_MAX MAX_PATH
@@ -352,8 +353,9 @@ static char *
 make_label(const char *label, char **cause)
 {
 #ifdef _WIN32
-	char	base[MAX_PATH], *clean, *dir, *path;
-	DWORD	n;
+	char	*clean;
+	wchar_t	*wpath;
+	char	*utf8;
 
 	*cause = NULL;
 	if (label == NULL)
@@ -362,27 +364,20 @@ make_label(const char *label, char **cause)
 		xasprintf(cause, "invalid socket name: %s", label);
 		return (NULL);
 	}
-	n = GetEnvironmentVariableA("LOCALAPPDATA", base, sizeof base);
-	if (n == 0 || n >= sizeof base)
-		n = GetTempPathA(sizeof base, base);
-	if (n == 0 || n >= sizeof base) {
-		xasprintf(cause, "couldn't find temporary directory");
+	if (win32_endpoint_resolve_path(clean, &wpath) != 0) {
+		xasprintf(cause, "couldn't create Windows endpoint path");
 		free(clean);
 		return (NULL);
 	}
-	xasprintf(&dir, "%s\\tmux", base);
-	if (!CreateDirectoryA(dir, NULL) &&
-	    GetLastError() != ERROR_ALREADY_EXISTS) {
-		xasprintf(cause, "couldn't create directory %s "
-		    "(Windows error %lu)", dir, GetLastError());
-		free(dir);
-		free(clean);
-		return (NULL);
-	}
-	xasprintf(&path, "%s\\%s.endpoint", dir, clean);
-	free(dir);
 	free(clean);
-	return (path);
+	/* Convert wide path back to UTF-8 for internal use. */
+	utf8 = win32_wide_to_utf8_path(wpath);
+	free(wpath);
+	if (utf8 == NULL) {
+		xasprintf(cause, "couldn't convert endpoint path to UTF-8");
+		return (NULL);
+	}
+	return (utf8);
 #else
 	char		**paths, *path, *base;
 	u_int		  i, n;

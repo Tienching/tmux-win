@@ -33,6 +33,7 @@
 #include <wchar.h>
 
 #include "win32-conpty.h"
+#include "win32-job.h"
 
 #ifndef __unused
 #ifdef __GNUC__
@@ -203,7 +204,8 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	HRESULT			 hr;
 	int			 attributes_initialized = 0;
 	DWORD			 creation_flags = EXTENDED_STARTUPINFO_PRESENT |
-	    CREATE_SUSPENDED|CREATE_NEW_PROCESS_GROUP;
+	    CREATE_SUSPENDED|CREATE_NEW_PROCESS_GROUP|
+	    win32_job_creation_flags_for_child();
 
 	if (pty == NULL) {
 		SetLastError(ERROR_INVALID_PARAMETER);
@@ -281,7 +283,7 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	    creation_flags, (LPVOID)environment, cwd, &startup.StartupInfo,
 	    &process))
 		goto fail;
-	if (!AssignProcessToJobObject(job, process.hProcess))
+	if (win32_job_assign_or_fallback(job, process.hProcess) != 0)
 		goto fail;
 	if (ResumeThread(process.hThread) == (DWORD)-1)
 		goto fail;

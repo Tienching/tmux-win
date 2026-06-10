@@ -41,6 +41,7 @@
 #include "compat/win32-command.h"
 #include "compat/win32-handle.h"
 #include "compat/win32-ipc.h"
+#include "compat/win32-job.h"
 #include "compat/win32-socketpair.h"
 #endif
 
@@ -316,7 +317,8 @@ out:
 	memset(&si, 0, sizeof si);
 	memset(&pi, 0, sizeof pi);
 	si.cb = sizeof si;
-	flags = CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS;
+	flags = CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS|
+	    win32_job_creation_flags_for_child();
 	if (!CreateProcessW(module, command_line, NULL, NULL, FALSE, flags,
 	    NULL, NULL, &si, &pi)) {
 		free(command_line);
