@@ -1,9 +1,28 @@
 # Native Windows porting status
 
+For registering this Windows build with TmuxHub, see [TMUXHUB.md](TMUXHUB.md) and `windows/install.ps1`.
+
 This tree is still primarily a POSIX tmux implementation. The native Windows
 port must preserve the Linux feature model: server/client separation, sessions,
 windows, panes, jobs, copy mode, control mode, configuration, formats, hooks,
 and terminal rendering.
+
+## Active Windows IPC path
+
+Current active server/client IPC path: **old-loopback-token** (`compat/win32-ipc.c`).
+
+The following files are active:
+- `client.c`: `win32_ipc_connect()` for client connections
+- `server.c`: `win32_ipc_listen()` + `win32_ipc_accept_nonblocking()` for server listener
+- `compat/win32-ipc.c`: loopback TCP listener, endpoint file, token authentication
+
+The following files are **experimental / not active** in the runtime path:
+- `compat/win32-daemon.c`: named pipe control channel prototype (`win32_daemon_spawn_server()`)
+- `compat/win32-endpoint.c`: atomic endpoint record with SID/pid/pipe fields
+
+The named-pipe daemon endpoint prototype exists, but the active client/server path
+still uses `win32-ipc.c` loopback token IPC until the active-path audit is green.
+`proc.c` contains a stub call to `win32_daemon_spawn_server()` that returns `ENOSYS`.
 
 ## Current foundation
 
