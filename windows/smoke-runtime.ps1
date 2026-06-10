@@ -733,7 +733,14 @@ try {
 
 		Invoke-NamedTmux $defaultName @("new-session", "-d", "-s",
 		    "defaultcfg", "cmd.exe") $TimeoutSeconds "" | Out-Null
-		Start-Sleep -Milliseconds 700
+		$defaultPollSw = [Diagnostics.Stopwatch]::StartNew()
+		while ($defaultPollSw.ElapsedMilliseconds -lt 7000) {
+			$programEnv = (Invoke-NamedTmux $defaultName `
+			    @("show-environment", "-g",
+			    "TMUX_WIN32_PROGRAMDATA_CONFIG") $TimeoutSeconds "").Out
+			if ($programEnv -like "*TMUX_WIN32_PROGRAMDATA_CONFIG=yes*") { break }
+			Start-Sleep -Milliseconds 100
+		}
 		$programEnv = (Invoke-NamedTmux $defaultName `
 		    @("show-environment", "-g",
 		    "TMUX_WIN32_PROGRAMDATA_CONFIG") $TimeoutSeconds "").Out
@@ -783,7 +790,13 @@ try {
 		Invoke-NamedTmux $staleName @("new-session", "-d", "-s",
 		    "stalecheck", "cmd.exe") $TimeoutSeconds "NUL" |
 		    Out-Null
-		Start-Sleep -Milliseconds 700
+		$stalePollSw = [Diagnostics.Stopwatch]::StartNew()
+		while ($stalePollSw.ElapsedMilliseconds -lt 7000) {
+			$staleSessions = (Invoke-NamedTmux $staleName `
+			    @("list-sessions") $TimeoutSeconds "NUL").Out
+			if ($staleSessions -like "*stalecheck:*") { break }
+			Start-Sleep -Milliseconds 100
+		}
 		$staleSessions = (Invoke-NamedTmux $staleName `
 		    @("list-sessions") $TimeoutSeconds "NUL").Out
 		Assert-Contains "stale endpoint startup" $staleSessions `
@@ -804,7 +817,12 @@ try {
 
 	Invoke-SmokeTmux @("new-session", "-d", "-s", "smoke", "cmd.exe") `
 	    $TimeoutSeconds $startupConfig | Out-Null
-	Start-Sleep -Milliseconds 700
+	$lifecyclePollSw = [Diagnostics.Stopwatch]::StartNew()
+	while ($lifecyclePollSw.ElapsedMilliseconds -lt 7000) {
+		$listSessions = (Invoke-SmokeTmux @("list-sessions")).Out
+		if ($listSessions -like "*smoke:*") { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$listSessions = (Invoke-SmokeTmux @("list-sessions")).Out
 	Assert-Contains "list-sessions" $listSessions "smoke:"
 	Write-Pass "detached server lifecycle"
@@ -893,9 +911,8 @@ try {
 
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
 	    "echo TMUX_WIN32_PANE_SMOKE", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 800
-	$capture = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "smoke:0.0")).Out
+	$capture = Wait-PaneContains "pane I/O" "smoke:0.0" `
+	    "TMUX_WIN32_PANE_SMOKE" 8000
 	Assert-Contains "pane I/O" $capture "TMUX_WIN32_PANE_SMOKE"
 	Write-Pass "pane send/capture"
 
@@ -906,11 +923,10 @@ try {
 	    "echo TMUX_WIN32_LEFT", "Enter") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.1",
 	    "echo TMUX_WIN32_RIGHT", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 800
-	$left = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "smoke:0.0")).Out
-	$right = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "smoke:0.1")).Out
+	$left = Wait-PaneContains "left pane" "smoke:0.0" `
+	    "TMUX_WIN32_LEFT" 8000
+	$right = Wait-PaneContains "right pane" "smoke:0.1" `
+	    "TMUX_WIN32_RIGHT" 8000
 	Assert-Contains "left pane" $left "TMUX_WIN32_LEFT"
 	Assert-Contains "right pane" $right "TMUX_WIN32_RIGHT"
 	Write-Pass "split-window independent panes"
@@ -925,16 +941,18 @@ try {
 	    "echo TMUX_WIN32_SWAP_LEFT", "Enter") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:swap.1",
 	    "echo TMUX_WIN32_SWAP_RIGHT", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 800
+	Wait-PaneContains "swap left pane" "smoke:swap.0" `
+	    "TMUX_WIN32_SWAP_LEFT" 8000 | Out-Null
+	Wait-PaneContains "swap right pane" "smoke:swap.1" `
+	    "TMUX_WIN32_SWAP_RIGHT" 8000 | Out-Null
 	Invoke-SmokeTmux @("select-layout", "-t", "smoke:swap",
 	    "even-horizontal") | Out-Null
 	Invoke-SmokeTmux @("swap-pane", "-s", "smoke:swap.0", "-t",
 	    "smoke:swap.1") | Out-Null
-	Start-Sleep -Milliseconds 600
-	$swapLeft = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "smoke:swap.0")).Out
-	$swapRight = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "smoke:swap.1")).Out
+	$swapLeft = Wait-PaneContains "swap-pane left" "smoke:swap.0" `
+	    "TMUX_WIN32_SWAP_RIGHT" 6000
+	$swapRight = Wait-PaneContains "swap-pane right" "smoke:swap.1" `
+	    "TMUX_WIN32_SWAP_LEFT" 6000
 	Assert-Contains "swap-pane left" $swapLeft "TMUX_WIN32_SWAP_RIGHT"
 	Assert-Contains "swap-pane right" $swapRight "TMUX_WIN32_SWAP_LEFT"
 	Close-WindowGracefully "swap cleanup" "smoke:swap"
@@ -945,7 +963,8 @@ try {
 	Start-Sleep -Milliseconds 600
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:linkwin.0",
 	    "echo TMUX_WIN32_LINK_WINDOW", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 800
+	Wait-PaneContains "link-window pane" "smoke:linkwin.0" `
+	    "TMUX_WIN32_LINK_WINDOW" 8000 | Out-Null
 	Invoke-SmokeTmux @("new-session", "-d", "-s", "linkdst",
 	    "cmd.exe") | Out-Null
 	Start-Sleep -Milliseconds 600
@@ -972,19 +991,27 @@ try {
 	Start-Sleep -Milliseconds 600
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:reflow.1",
 	    "echo TMUX_WIN32_BREAK_JOIN", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 800
+	Wait-PaneContains "break-join pane" "smoke:reflow.1" `
+	    "TMUX_WIN32_BREAK_JOIN" 8000 | Out-Null
 	$breakPaneId = (Invoke-SmokeTmux @("display-message", "-p",
 	    "-t", "smoke:reflow.1", "#{pane_id}")).Out.Trim()
 	Invoke-SmokeTmux @("break-pane", "-d", "-n", "broken", "-s",
 	    $breakPaneId) | Out-Null
-	Start-Sleep -Milliseconds 700
-	$brokenCapture = (Invoke-SmokeTmux @("capture-pane", "-p",
-	    "-t", "smoke:broken.0")).Out
+	$brokenCapture = Wait-PaneContains "break-pane output" `
+	    "smoke:broken.0" "TMUX_WIN32_BREAK_JOIN" 7000
 	Assert-Contains "break-pane output" $brokenCapture `
 	    "TMUX_WIN32_BREAK_JOIN"
 	Invoke-SmokeTmux @("join-pane", "-h", "-s", "smoke:broken.0",
 	    "-t", "smoke:reflow.0") | Out-Null
-	Start-Sleep -Milliseconds 700
+	$joinPollSw = [Diagnostics.Stopwatch]::StartNew()
+	$reflowPanes = ""
+	while ($joinPollSw.ElapsedMilliseconds -lt 7000) {
+		$reflowPanes = (Invoke-SmokeTmux @("list-panes", "-t",
+		    "smoke:reflow", "-F", "#{pane_index}")).Out
+		if (($reflowPanes -split "`r?`n" | Where-Object {
+		    $_ -ne "" }).Count -eq 2) { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$reflowPanes = (Invoke-SmokeTmux @("list-panes", "-t",
 	    "smoke:reflow", "-F", "#{pane_index}")).Out
 	if (@($reflowPanes -split "`r?`n" | Where-Object {
@@ -997,7 +1024,8 @@ try {
 
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "respawnp", "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "respawn pane window" "smoke:respawnp.0" `
+	    "cmd.exe" 7000 | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:respawnp.0",
 	    "echo TMUX_WIN32_RESPAWN_PANE_INITIAL", "Enter") | Out-Null
 	$respawnCapture = Wait-PaneContains "respawn initial pane" `
@@ -1018,7 +1046,8 @@ try {
 	    "respawnw", "cmd.exe") | Out-Null
 	Invoke-SmokeTmux @("set-option", "-w", "-t", "smoke:respawnw",
 	    "remain-on-exit", "on") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "respawn window window" "smoke:respawnw.0" `
+	    "cmd.exe" 7000 | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:respawnw.0",
 	    "echo TMUX_WIN32_RESPAWN_WINDOW_INITIAL & exit", "Enter") |
 	    Out-Null
@@ -1042,7 +1071,8 @@ try {
 
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "killtree", "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "killtree window" "smoke:killtree.0" `
+	    "cmd.exe" 7000 | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:killtree.0",
 	    "timeout /t 30 /nobreak", "Enter") | Out-Null
 	Wait-PaneCurrentCommand "kill-pane active child command" `
@@ -1068,7 +1098,14 @@ try {
 		} catch {
 		}
 	}
-	Start-Sleep -Milliseconds 1200
+	$killPaneWaitSw = [Diagnostics.Stopwatch]::StartNew()
+	while ($killPaneWaitSw.ElapsedMilliseconds -lt 12000) {
+		$aliveKillTreeChildren = @($killTreeChildren | Where-Object {
+		    Get-Process -Id $_ -ErrorAction SilentlyContinue
+		})
+		if ($aliveKillTreeChildren.Count -eq 0) { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$aliveKillTreeChildren = @($killTreeChildren | Where-Object {
 	    Get-Process -Id $_ -ErrorAction SilentlyContinue
 	})
@@ -1080,7 +1117,15 @@ try {
 
 	Invoke-SmokeTmux @("resize-pane", "-x", "50", "-t", "smoke:0.0") |
 	    Out-Null
-	Start-Sleep -Milliseconds 500
+	$resizePollSw = [Diagnostics.Stopwatch]::StartNew()
+	$panes = ""
+	while ($resizePollSw.ElapsedMilliseconds -lt 5000) {
+		$panes = (Invoke-SmokeTmux @("list-panes", "-F",
+		    "#{pane_index}:#{pane_width}x#{pane_height}:#{pane_dead}:#{pane_current_command}",
+		    "-t", "smoke:0")).Out
+		if ($panes -like "*0:50x*") { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$panes = (Invoke-SmokeTmux @("list-panes", "-F",
 	    "#{pane_index}:#{pane_width}x#{pane_height}:#{pane_dead}:#{pane_current_command}",
 	    "-t", "smoke:0")).Out
@@ -1094,9 +1139,8 @@ try {
 	Wait-PaneCurrentCommand "pane current command active child" `
 	    "smoke:0.0" "timeout.exe" | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0", "C-c") | Out-Null
-	Start-Sleep -Milliseconds 1400
-	$interruptedCommand = (Invoke-SmokeTmux @("display-message", "-p",
-	    "-t", "smoke:0.0", "#{pane_current_command}")).Out.Trim()
+	$interruptedCommand = Wait-PaneCurrentCommand "pane C-c interrupt" `
+	    "smoke:0.0" "cmd.exe" 14000
 	Assert-Contains "pane C-c interrupt" $interruptedCommand "cmd.exe"
 	Write-Pass "pane current command active child"
 	Write-Pass "pane C-c interrupt"
@@ -1247,7 +1291,16 @@ exit 2
 	New-Item -ItemType Directory -Force -Path $dynamicPaneCwd | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
 	    "cd /d `"$dynamicPaneCwd`"", "Enter", "cd", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 900
+	$dynamicPathPollSw = [Diagnostics.Stopwatch]::StartNew()
+	$dynamicPanePath = ""
+	while ($dynamicPathPollSw.ElapsedMilliseconds -lt 9000) {
+		$dynamicPanePath = (Invoke-SmokeTmux @("display-message", "-p",
+		    "-t", "smoke:0.0", "#{pane_current_path}")).Out.Trim()
+		$resolvedDynamicPanePath = Resolve-SmokePath $dynamicPanePath
+		$resolvedDynamicPaneCwd = Resolve-SmokePath $dynamicPaneCwd
+		if ($resolvedDynamicPanePath -eq $resolvedDynamicPaneCwd) { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$dynamicPanePath = (Invoke-SmokeTmux @("display-message", "-p",
 	    "-t", "smoke:0.0", "#{pane_current_path}")).Out.Trim()
 	if (-not (Test-Path -LiteralPath $dynamicPanePath)) {
@@ -1264,7 +1317,8 @@ exit 2
 	New-Item -ItemType Directory -Force -Path $paneCwd | Out-Null
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "cwd", "-c", $paneCwd, "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "pane cwd" "smoke:cwd.0" "cmd.exe" 7000 |
+	    Out-Null
 	$paneCwdPath = (Invoke-SmokeTmux @("display-message", "-p",
 	    "-t", "smoke:cwd.0", "#{pane_current_path}")).Out.Trim()
 	if (-not (Test-Path -LiteralPath $paneCwdPath)) {
@@ -1280,7 +1334,8 @@ exit 2
 	    Out-Null
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "cwdspace", "-c", $paneCwdWithSpaces, "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "pane cwd spaces" "smoke:cwdspace.0" `
+	    "cmd.exe" 7000 | Out-Null
 	$paneCwdWithSpacesPath = (Invoke-SmokeTmux @("display-message",
 	    "-p", "-t", "smoke:cwdspace.0", "#{pane_current_path}")).Out.Trim()
 	if (-not (Test-Path -LiteralPath $paneCwdWithSpacesPath)) {
@@ -1301,7 +1356,8 @@ exit 2
 	    -Target $paneJunctionTarget | Out-Null
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "cwdjunction", "-c", $paneJunctionCwd, "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "pane cwd junction" "smoke:cwdjunction.0" `
+	    "cmd.exe" 7000 | Out-Null
 	$paneJunctionPath = (Invoke-SmokeTmux @("display-message",
 	    "-p", "-t", "smoke:cwdjunction.0", "#{pane_current_path}")).Out.Trim()
 	if (-not (Test-Path -LiteralPath $paneJunctionPath)) {
@@ -1328,7 +1384,8 @@ exit 2
 		Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke",
 		    "-n", "cwdsymlink", "-c", $paneSymlinkCwd, "cmd.exe") |
 		    Out-Null
-		Start-Sleep -Milliseconds 700
+		Wait-PaneCurrentCommand "pane cwd symlink" "smoke:cwdsymlink.0" `
+		    "cmd.exe" 7000 | Out-Null
 		$paneSymlinkPath = (Invoke-SmokeTmux @("display-message",
 		    "-p", "-t", "smoke:cwdsymlink.0",
 		    "#{pane_current_path}")).Out.Trim()
@@ -1350,7 +1407,8 @@ exit 2
 	    $paneExtendedDir).Path
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "cwdextended", "-c", $paneExtendedCwd, "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "pane cwd extended" "smoke:cwdextended.0" `
+	    "cmd.exe" 7000 | Out-Null
 	$paneExtendedPath = (Invoke-SmokeTmux @("display-message",
 	    "-p", "-t", "smoke:cwdextended.0",
 	    "#{pane_current_path}")).Out.Trim()
@@ -1366,7 +1424,8 @@ exit 2
 	$paneLongFile = Join-Path $paneLong.Path "pane-long.txt"
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "cwdlong", "-c", $paneLong.Path, "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "pane cwd long" "smoke:cwdlong.0" `
+	    "cmd.exe" 7000 | Out-Null
 	$paneLongPath = (Invoke-SmokeTmux @("display-message", "-p",
 	    "-t", "smoke:cwdlong.0", "#{pane_current_path}")).Out.Trim()
 	if (-not (Test-SmokePath $paneLongPath)) {
@@ -1395,7 +1454,8 @@ exit 2
 		$paneUncFile = Join-Path $paneUncDir "cmd-pane-unc.txt"
 		Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke",
 		    "-n", "cwdunc", "-c", $paneUncCwd) | Out-Null
-		Start-Sleep -Milliseconds 900
+		Wait-PaneCurrentCommand "pane cwd UNC" "smoke:cwdunc.0" `
+		    "cmd.exe" 9000 | Out-Null
 		Invoke-SmokeTmux @("send-keys", "-t", "smoke:cwdunc.0",
 		    "echo TMUX_WIN32_CMD_UNC>cmd-pane-unc.txt", "Enter") |
 		    Out-Null
@@ -1407,7 +1467,8 @@ exit 2
 	$missingPaneCwd = Join-Path $Temp "missing-pane-cwd"
 	Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke", "-n",
 	    "badcwd", "-c", $missingPaneCwd, "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	Wait-PaneCurrentCommand "pane bad cwd" "smoke:badcwd.0" `
+	    "cmd.exe" 7000 | Out-Null
 	$fallbackPaneCwd = (Invoke-SmokeTmux @("display-message", "-p",
 	    "-t", "smoke:badcwd.0", "#{pane_current_path}")).Out.Trim()
 	if (-not (Test-Path -LiteralPath $fallbackPaneCwd)) {
@@ -1755,7 +1816,8 @@ exit 2
 
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
 	    "echo TMUX_WIN32_COPY_TARGET", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 800
+	Wait-PaneContains "copy-mode target" "smoke:0.0" `
+	    "TMUX_WIN32_COPY_TARGET" 8000 | Out-Null
 	Invoke-SmokeTmux @("copy-mode", "-t", "smoke:0.0") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-X", "-t", "smoke:0.0",
 	    "search-backward", "TMUX_WIN32_COPY_TARGET") | Out-Null
@@ -1771,7 +1833,8 @@ exit 2
 	    "echo TMUX_WIN32_SEARCH_BETA", "Enter") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
 	    "echo TMUX_WIN32_SEARCH_GAMMA", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 900
+	Wait-PaneContains "search gamma" "smoke:0.0" `
+	    "TMUX_WIN32_SEARCH_GAMMA" 9000 | Out-Null
 	Invoke-SmokeTmux @("copy-mode", "-t", "smoke:0.0") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-X", "-t", "smoke:0.0",
 	    "search-backward", "TMUX_WIN32_SEARCH_ALPHA") | Out-Null
@@ -1793,7 +1856,8 @@ exit 2
 	    "echo TMUX_WIN32_COPY_MULTI_A", "Enter") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
 	    "echo TMUX_WIN32_COPY_MULTI_B", "Enter") | Out-Null
-	Start-Sleep -Milliseconds 900
+	Wait-PaneContains "copy multi B" "smoke:0.0" `
+	    "TMUX_WIN32_COPY_MULTI_B" 9000 | Out-Null
 	Invoke-SmokeTmux @("copy-mode", "-t", "smoke:0.0") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-X", "-t", "smoke:0.0",
 	    "search-backward", "TMUX_WIN32_COPY_MULTI_A") | Out-Null
@@ -1811,9 +1875,8 @@ exit 2
 	$rectangleCommand = "echo AAAA_RECT_ONE & echo BBBB_RECT_TWO"
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
 	    $rectangleCommand, "Enter") | Out-Null
-	Start-Sleep -Milliseconds 1200
-	$rectangleCapture = (Invoke-SmokeTmux @("capture-pane", "-p",
-	    "-t", "smoke:0.0")).Out
+	$rectangleCapture = Wait-PaneContains "copy-mode rectangle source" `
+	    "smoke:0.0" "AAAA_RECT_ONE" 12000
 	Assert-Contains "copy-mode rectangle source" $rectangleCapture `
 	    "AAAA_RECT_ONE"
 	Assert-Contains "copy-mode rectangle source" $rectangleCapture `
@@ -1842,9 +1905,8 @@ exit 2
 	    "smoke:0.0") | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0", "Enter") |
 	    Out-Null
-	Start-Sleep -Milliseconds 900
-	$capture = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "smoke:0.0")).Out
+	$capture = Wait-PaneContains "paste-buffer" "smoke:0.0" `
+	    "TMUX_WIN32_PASTE_BUFFER" 9000
 	Assert-Contains "paste-buffer" $capture "TMUX_WIN32_PASTE_BUFFER"
 	Write-Pass "paste-buffer"
 
@@ -1856,8 +1918,7 @@ exit 2
 	Invoke-SmokeTmux @("send-keys", "-X", "-t", "smoke:0.0",
 	    "copy-pipe-line-and-cancel", "more > $copyPipeTarget") |
 	    Out-Null
-	Start-Sleep -Milliseconds 1200
-	Assert-FileContains "copy-pipe" $copyPipeFile "TMUX_WIN32_COPY_TARGET"
+	Wait-FileContains "copy-pipe" $copyPipeFile "TMUX_WIN32_COPY_TARGET" 12000
 	Write-Pass "copy-pipe-line"
 
 	Start-ControlClient
@@ -1959,9 +2020,18 @@ exit 2
 
 	Invoke-SmokeTmux @("new-session", "-d", "-s", "attachsmoke",
 	    "cmd.exe") | Out-Null
-	Start-Sleep -Milliseconds 700
+	$attachSmokePollSw = [Diagnostics.Stopwatch]::StartNew()
+	while ($attachSmokePollSw.ElapsedMilliseconds -lt 7000) {
+		$attachSessions = (Invoke-SmokeTmux @("list-sessions")).Out
+		if ($attachSessions -like "*attachsmoke:*") { break }
+		Start-Sleep -Milliseconds 100
+	}
 	Start-AttachedClient "attachsmoke"
-	Start-Sleep -Milliseconds 1200
+	$attachReadyPollSw = [Diagnostics.Stopwatch]::StartNew()
+	while ($attachReadyPollSw.ElapsedMilliseconds -lt 12000) {
+		if ($AttachedProcess.HasExited) { break }
+		Start-Sleep -Milliseconds 100
+	}
 	if ($AttachedProcess.HasExited) {
 		$AttachedErrorTask.Wait(1000) | Out-Null
 		$stderr = if ($AttachedErrorTask.IsCompleted) {
@@ -1973,9 +2043,8 @@ exit 2
 	}
 	$AttachedProcess.StandardInput.Write("echo TMUX_WIN32_ATTACH_MODE`r")
 	$AttachedProcess.StandardInput.Flush()
-	Start-Sleep -Milliseconds 1200
-	$capture = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "attachsmoke:0.0")).Out
+	$capture = Wait-PaneContains "attached client input" "attachsmoke:0.0" `
+	    "TMUX_WIN32_ATTACH_MODE" 12000
 	Assert-Contains "attached client input" $capture `
 	    "TMUX_WIN32_ATTACH_MODE"
 	$clients = (Invoke-SmokeTmux @("list-clients", "-F",
@@ -2052,7 +2121,14 @@ exit 2
 		    "-c", $attachedClientName, "-t", "attachsmoke:0.0",
 		    "-x", "C", "-y", "C", "-C", "0", "Run menu smoke", "r",
 		    $menuCommand)
-		Start-Sleep -Milliseconds 1200
+		$menuReadySw = [Diagnostics.Stopwatch]::StartNew()
+		while ($menuReadySw.ElapsedMilliseconds -lt 12000) {
+			if ($MenuProcess.HasExited) { break }
+			$inMode = (Invoke-SmokeTmux @("display-message", "-p",
+			    "-t", "attachsmoke:0.0", "#{pane_in_mode}")).Out.Trim()
+			if ($inMode -eq "1") { break }
+			Start-Sleep -Milliseconds 100
+		}
 		if ($MenuProcess.HasExited) {
 			$stderr = $MenuProcess.StandardError.ReadToEnd()
 			$stdout = $MenuProcess.StandardOutput.ReadToEnd()
@@ -2080,7 +2156,14 @@ exit 2
 	    "echo TMUX_WIN32_CHOOSE_BUFFER") | Out-Null
 	Invoke-SmokeTmux @("choose-buffer", "-t", "attachsmoke:0.0",
 	    "-f", "#{==:#{buffer_name},winchoose}") | Out-Null
-	Start-Sleep -Milliseconds 700
+	$chooseModePollSw = [Diagnostics.Stopwatch]::StartNew()
+	$chooseMode = "0"
+	while ($chooseModePollSw.ElapsedMilliseconds -lt 7000) {
+		$chooseMode = (Invoke-SmokeTmux @("display-message", "-p", "-t",
+		    "attachsmoke:0.0", "#{pane_in_mode}")).Out.Trim()
+		if ($chooseMode -eq "1") { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$chooseMode = (Invoke-SmokeTmux @("display-message", "-p", "-t",
 	    "attachsmoke:0.0", "#{pane_in_mode}")).Out.Trim()
 	if ($chooseMode -ne "1") {
@@ -2102,9 +2185,8 @@ exit 2
 	}
 	$AttachedProcess.StandardInput.Write("`r")
 	$AttachedProcess.StandardInput.Flush()
-	Start-Sleep -Milliseconds 1200
-	$capture = (Invoke-SmokeTmux @("capture-pane", "-p", "-t",
-	    "attachsmoke:0.0")).Out
+	$capture = Wait-PaneContains "choose-buffer result" "attachsmoke:0.0" `
+	    "TMUX_WIN32_CHOOSE_BUFFER" 12000
 	Assert-Contains "choose-buffer" $capture "TMUX_WIN32_CHOOSE_BUFFER"
 	Write-Pass "choose-buffer"
 	$treeFile = Join-Path $Temp "choose-tree.txt"
@@ -2113,7 +2195,14 @@ exit 2
 	Invoke-SmokeTmux @("choose-tree", "-t", "attachsmoke:0.0",
 	    "-f", "#{==:#{session_name},attachsmoke}", $treeCommand) |
 	    Out-Null
-	Start-Sleep -Milliseconds 700
+	$treeModePollSw = [Diagnostics.Stopwatch]::StartNew()
+	$treeMode = "0"
+	while ($treeModePollSw.ElapsedMilliseconds -lt 7000) {
+		$treeMode = (Invoke-SmokeTmux @("display-message", "-p", "-t",
+		    "attachsmoke:0.0", "#{pane_in_mode}")).Out.Trim()
+		if ($treeMode -eq "1") { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$treeMode = (Invoke-SmokeTmux @("display-message", "-p", "-t",
 	    "attachsmoke:0.0", "#{pane_in_mode}")).Out.Trim()
 	if ($treeMode -ne "1") {
@@ -2141,7 +2230,13 @@ exit 2
 	    $attachedClientName, "-p", "prompt smoke", "-I",
 	    "TMUX_WIN32_COMMAND_PROMPT", $promptCommand) |
 	    Out-Null
-	Start-Sleep -Milliseconds 1200
+	$promptReadySw = [Diagnostics.Stopwatch]::StartNew()
+	while ($promptReadySw.ElapsedMilliseconds -lt 12000) {
+		$inMode = (Invoke-SmokeTmux @("display-message", "-p", "-t",
+		    "attachsmoke:0.0", "#{pane_in_mode}")).Out.Trim()
+		if ($inMode -eq "1") { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$promptWait = [Diagnostics.Stopwatch]::StartNew()
 	while ($promptWait.ElapsedMilliseconds -lt 10000) {
 		$AttachedProcess.StandardInput.Write("`r")
@@ -2163,7 +2258,13 @@ exit 2
 	Invoke-SmokeTmux @("confirm-before", "-b", "-t",
 	    $attachedClientName, "-p", "confirm smoke?", $confirmCommand) |
 	    Out-Null
-	Start-Sleep -Milliseconds 1200
+	$confirmReadySw = [Diagnostics.Stopwatch]::StartNew()
+	while ($confirmReadySw.ElapsedMilliseconds -lt 12000) {
+		$inMode = (Invoke-SmokeTmux @("display-message", "-p", "-t",
+		    "attachsmoke:0.0", "#{pane_in_mode}")).Out.Trim()
+		if ($inMode -eq "1") { break }
+		Start-Sleep -Milliseconds 100
+	}
 	$confirmWait = [Diagnostics.Stopwatch]::StartNew()
 	while ($confirmWait.ElapsedMilliseconds -lt 10000) {
 		$AttachedProcess.StandardInput.Write("y")

@@ -228,7 +228,9 @@ $requiredPassedSteps = @(
     "stress",
     "soak",
     "console-soak",
-    "clipboard-stress"
+    "clipboard-stress",
+    "hosted_ci_green",
+    "trusted_signing"
 )
 foreach ($name in $requiredPassedSteps) {
 	$covered = $steps.ContainsKey($name) -and

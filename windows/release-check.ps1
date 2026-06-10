@@ -14,6 +14,7 @@ param(
 	[string]$MsixPublisher = "CN=tmux",
 	[string]$MsixCertificatePath = "",
 	[string]$MsixCertificatePassword = "",
+	[SecureString]$MsixCertificatePasswordSecure = $null,
 	[string]$MsixCertificateThumbprint = "",
 	[int]$SmokeTimeoutSeconds = 60,
 	[int]$RespawnIterations = 0,
@@ -264,7 +265,9 @@ if ($BuildMsix) {
 		if (-not [string]::IsNullOrWhiteSpace($MsixCertificatePath)) {
 			$msixArgs.CertificatePath = $MsixCertificatePath
 		}
-		if (-not [string]::IsNullOrWhiteSpace($MsixCertificatePassword)) {
+		if ($null -ne $MsixCertificatePasswordSecure) {
+			$msixArgs.CertificatePasswordSecure = $MsixCertificatePasswordSecure
+		} elseif (-not [string]::IsNullOrWhiteSpace($MsixCertificatePassword)) {
 			$msixArgs.CertificatePassword = $MsixCertificatePassword
 		}
 		if (-not [string]::IsNullOrWhiteSpace(
