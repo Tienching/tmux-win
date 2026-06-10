@@ -1,3 +1,13 @@
+WINDOWS PORT CHANGES (release candidate):
+
+* Native Windows port using Win32 IPC, ConPTY, and stdio bridge
+* Loopback TCP IPC with endpoint file and token authentication
+* ConPTY-based pane creation and rendering
+* Process/job management with Win32 Job Objects
+* Windows clipboard support
+* Detach/reconnect support
+* MSIX packaging support
+
 CHANGES FROM 3.6 TO 3.6a
 
 * Fix a buffer overread and an infinite loop in format processing (reported by

@@ -19,6 +19,7 @@
 
 #include "win32-endpoint.h"
 
+#include <objbase.h>
 #include <sddl.h>
 #include <shlobj.h>
 #include <stdio.h>
@@ -123,7 +124,7 @@ static int
 win32ep_create_directories(const wchar_t *path)
 {
 	wchar_t	buf[MAX_PATH * 2];
-	size_t	i, len;
+	size_t	i, len, start;
 
 	len = wcslen(path);
 	if (len + 1 > sizeof buf / sizeof *buf) {
@@ -131,7 +132,12 @@ win32ep_create_directories(const wchar_t *path)
 		return (-1);
 	}
 	wcscpy_s(buf, sizeof buf / sizeof *buf, path);
-	for (i = 1; i < len; i++) {
+	/* Skip drive-letter prefix (e.g. "C:\") so we never call
+	   CreateDirectoryW("C:") which returns ERROR_ACCESS_DENIED. */
+	start = 0;
+	if (len >= 3 && buf[1] == L':' && (buf[2] == L'\\' || buf[2] == L'/'))
+		start = 3;
+	for (i = start; i < len; i++) {
 		if (buf[i] != L'\\' && buf[i] != L'/')
 			continue;
 		buf[i] = L'\0';
@@ -154,12 +160,14 @@ win32_endpoint_resolve_path(const char *socket_name, wchar_t **path_out)
 	wchar_t	dir[MAX_PATH * 2];
 	size_t	cap;
 	int	rc = -1;
+	HRESULT	comInit = S_FALSE;
 
 	if (socket_name == NULL || path_out == NULL) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return (-1);
 	}
 	*path_out = NULL;
+	comInit = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 	if (win32ep_local_appdata(&appdata) != 0)
 		goto out;
 	if (win32ep_current_user_sid(sid) != 0)
@@ -190,6 +198,8 @@ win32_endpoint_resolve_path(const char *socket_name, wchar_t **path_out)
 	rc = 0;
 
 out:
+	if (comInit == S_OK)
+		CoUninitialize();
 	free(appdata);
 	free(socket_w);
 	free(full);

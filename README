@@ -14,6 +14,17 @@ ship on the same cadence or with the same packaging as Unix tmux; the release
 bar is that the Windows build behaves like tmux for the features supported by
 the Windows platform.
 
+## Windows port status
+
+This branch is a native Windows port release candidate. It is suitable for experimentation and dogfooding. Production release requires hosted CI green evidence, trusted signing, and completion-audit status complete.
+
+Key Windows-specific components:
+- Win32 IPC with loopback TCP and token authentication
+- ConPTY-based pane rendering
+- stdio bridge for client terminal I/O
+- Job Object management for process groups
+- Windows clipboard support
+
 ## Status
 
 The Windows port builds as a native Win32 executable and uses ConPTY for pane

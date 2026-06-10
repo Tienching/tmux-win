@@ -117,6 +117,12 @@ win32_handle_message_to_fd(const struct win32_handle_message *message,
 	 */
 	switch (file_type) {
 	case FILE_TYPE_PIPE:
+		/*
+		 * Pipes may be unidirectional (read-end or write-end only).
+		 * Requesting both GENERIC_READ and GENERIC_WRITE can fail if
+		 * the handle only grants one direction, so fall back to
+		 * DUPLICATE_SAME_ACCESS if restricted duplication fails.
+		 */
 		desired_access = GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE;
 		break;
 	case FILE_TYPE_DISK:
@@ -136,6 +142,15 @@ win32_handle_message_to_fd(const struct win32_handle_message *message,
 		if (!DuplicateHandle(GetCurrentProcess(), target,
 		    GetCurrentProcess(), &restricted, desired_access, FALSE,
 		    0)) {
+			/*
+			 * For pipes, the handle may only support one
+			 * direction (read or write). Fall back to
+			 * DUPLICATE_SAME_ACCESS which is still safe for
+			 * pipes since they cannot grant dangerous access
+			 * like PROCESS_ALL_ACCESS.
+			 */
+			if (file_type == FILE_TYPE_PIPE)
+				goto skip_restrict;
 			CloseHandle(target);
 			SetLastError(ERROR_ACCESS_DENIED);
 			return (-1);
@@ -143,6 +158,7 @@ win32_handle_message_to_fd(const struct win32_handle_message *message,
 		CloseHandle(target);
 		target = restricted;
 	}
+skip_restrict:
 
 	fd = _open_osfhandle((intptr_t)target, flags | _O_NOINHERIT);
 	if (fd == -1) {
