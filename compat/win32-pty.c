@@ -166,6 +166,9 @@ win32_pty_socket_to_conpty(LPVOID data)
 	char				 buffer[WIN32_PTY_BUFFER];
 	int				 i, n, offset;
 
+	free(args);
+	args = NULL;
+
 	for (;;) {
 		n = recv(bridge_socket, buffer, sizeof buffer, 0);
 		if (n <= 0)
@@ -203,6 +206,9 @@ win32_pty_conpty_to_socket(LPVOID data)
 	char				 buffer[WIN32_PTY_BUFFER];
 	DWORD				 n;
 	int				 sent, offset;
+
+	free(args);
+	args = NULL;
 
 	for (;;) {
 		if (!ReadFile(output, buffer, sizeof buffer, &n, NULL) ||
@@ -368,24 +374,29 @@ win32_pty_terminate(struct win32_pty *pty, unsigned int exit_code)
 	}
 	win32_process_tree_terminate_children(pty->conpty.process_id,
 	    pty->conpty.process, exit_code);
-	if (pty->conpty.job != NULL) {
-		if (!TerminateJobObject((HANDLE)pty->conpty.job, exit_code))
-			return (-1);
-		return (0);
-	}
+	/*
+	 * Always call TerminateProcess regardless of whether job is set.
+	 * When job is non-NULL, TerminateJobObject kills all processes in
+	 * the job, but TerminateProcess is still needed as a safety net
+	 * in case the process was not fully assigned.  When job is NULL
+	 * (parent-job fallback), only TerminateProcess applies.
+	 */
+	if (pty->conpty.job != NULL)
+		TerminateJobObject((HANDLE)pty->conpty.job, exit_code);
 	if (!TerminateProcess((HANDLE)pty->conpty.process, exit_code))
 		return (-1);
 	return (0);
 }
 
-void
+int
 win32_pty_close(struct win32_pty *pty)
 {
 	uintptr_t	socket;
 	DWORD		result;
+	int		forced = 0;
 
 	if (pty == NULL)
-		return;
+		return (0);
 
 	socket = pty->bridge_socket;
 
@@ -403,12 +414,12 @@ win32_pty_close(struct win32_pty *pty)
 		result = WaitForSingleObject((HANDLE)pty->conpty.process, 1000);
 		if (result == WAIT_TIMEOUT) {
 			/*
-			 * Child process did not exit in time.  Do not
-			 * close ConPTY handles or memset the parent struct,
-			 * since the child and workers may still be using
-			 * them.  The caller must retry or use terminate.
+			 * Child process did not exit in time.  Force
+			 * terminate so we can safely close resources.
 			 */
-			return;
+			win32_pty_terminate(pty, 1);
+			forced = 1;
+			WaitForSingleObject((HANDLE)pty->conpty.process, 2000);
 		}
 	}
 
@@ -418,10 +429,12 @@ win32_pty_close(struct win32_pty *pty)
 		    WIN32_PTY_CLOSE_TIMEOUT_MS);
 		if (result != WAIT_OBJECT_0) {
 			/*
-			 * Input worker did not exit.  Do not close ConPTY
-			 * handles or memset — worker may still access them.
+			 * Input worker still running.  The bridge socket
+			 * is shut down and IO is cancelled, so the worker
+			 * should exit soon.  Wait a bit longer.
 			 */
-			return;
+			WaitForSingleObject((HANDLE)pty->input_thread, 2000);
+			forced = 1;
 		}
 		CloseHandle((HANDLE)pty->input_thread);
 		pty->input_thread = NULL;
@@ -430,11 +443,8 @@ win32_pty_close(struct win32_pty *pty)
 		result = WaitForSingleObject((HANDLE)pty->output_thread,
 		    WIN32_PTY_CLOSE_TIMEOUT_MS);
 		if (result != WAIT_OBJECT_0) {
-			/*
-			 * Output worker did not exit.  Same reasoning:
-			 * do not release resources it may still use.
-			 */
-			return;
+			WaitForSingleObject((HANDLE)pty->output_thread, 2000);
+			forced = 1;
 		}
 		CloseHandle((HANDLE)pty->output_thread);
 		pty->output_thread = NULL;
@@ -450,6 +460,8 @@ win32_pty_close(struct win32_pty *pty)
 	/* Step 7: zero the parent struct. */
 	memset(pty, 0, sizeof *pty);
 	pty->bridge_socket = (uintptr_t)INVALID_SOCKET;
+
+	return (forced);
 }
 
 unsigned long

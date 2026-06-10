@@ -283,8 +283,23 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	    creation_flags, (LPVOID)environment, cwd, &startup.StartupInfo,
 	    &process))
 		goto fail;
-	if (win32_job_assign_or_fallback(job, process.hProcess) != 0)
-		goto fail;
+	{
+		enum win32_job_assign_result assign_result;
+		assign_result = win32_job_assign_or_fallback(job,
+		    process.hProcess);
+		if (assign_result == WIN32_JOB_ASSIGN_FAILED)
+			goto fail;
+		if (assign_result == WIN32_JOB_ASSIGN_PARENT_JOB) {
+			/*
+			 * Process is in a non-breakaway parent job.  Close
+			 * our local job so terminate paths use
+			 * process-tree + TerminateProcess instead of
+			 * TerminateJobObject on an empty job.
+			 */
+			CloseHandle(job);
+			job = NULL;
+		}
+	}
 	if (ResumeThread(process.hThread) == (DWORD)-1)
 		goto fail;
 

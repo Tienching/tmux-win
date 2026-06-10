@@ -45,20 +45,24 @@ win32_job_creation_flags_for_child(void)
 	return (0);
 }
 
-int
+enum win32_job_assign_result
 win32_job_assign_or_fallback(HANDLE job, HANDLE process)
 {
 	if (AssignProcessToJobObject(job, process))
-		return (0);
+		return (WIN32_JOB_ASSIGN_OK);
+
 	if (GetLastError() == ERROR_ACCESS_DENIED) {
 		/*
 		 * The process is already in a non-breakaway job that
-		 * prevents assignment to our job.  Rely on the parent
-		 * job's kill-on-close instead.
+		 * prevents assignment to our job.  The caller must close
+		 * the local job handle and set job=NULL so that terminate
+		 * paths fall back to process-tree + TerminateProcess instead
+		 * of TerminateJobObject (which would only terminate an
+		 * empty job).
 		 */
-		return (0);
+		return (WIN32_JOB_ASSIGN_PARENT_JOB);
 	}
-	return (-1);
+	return (WIN32_JOB_ASSIGN_FAILED);
 }
 
 #endif

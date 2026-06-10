@@ -92,6 +92,9 @@ win32_process_socket_to_stdin(LPVOID data)
 	int				 n;
 	DWORD				 written;
 
+	free(args);
+	args = NULL;
+
 	for (;;) {
 		n = recv(bridge_socket, buffer, sizeof buffer, 0);
 		if (n <= 0)
@@ -114,6 +117,9 @@ win32_process_stdout_to_socket(LPVOID data)
 	char				 buffer[WIN32_PROCESS_BUFFER];
 	DWORD				 n;
 	int				 sent, offset;
+
+	free(args);
+	args = NULL;
 
 	for (;;) {
 		if (!ReadFile(output, buffer, sizeof buffer, &n, NULL) ||
@@ -270,8 +276,22 @@ win32_process_spawn(struct win32_process *process,
 		goto fail;
 	}
 	free(command);
-	if (win32_job_assign_or_fallback(job, pi.hProcess) != 0)
-		goto fail;
+	{
+		enum win32_job_assign_result assign_result;
+		assign_result = win32_job_assign_or_fallback(job, pi.hProcess);
+		if (assign_result == WIN32_JOB_ASSIGN_FAILED)
+			goto fail;
+		if (assign_result == WIN32_JOB_ASSIGN_PARENT_JOB) {
+			/*
+			 * Process is in a non-breakaway parent job.  Close
+			 * our local job so terminate paths use
+			 * process-tree + TerminateProcess instead of
+			 * TerminateJobObject on an empty job.
+			 */
+			CloseHandle(job);
+			job = NULL;
+		}
+	}
 	if (ResumeThread(pi.hThread) == (DWORD)-1)
 		goto fail;
 
@@ -426,24 +446,29 @@ win32_process_terminate(struct win32_process *process, unsigned int exit_code)
 	}
 	win32_process_tree_terminate_children(process->process_id,
 	    process->process, exit_code);
-	if (process->job != NULL) {
-		if (!TerminateJobObject((HANDLE)process->job, exit_code))
-			return (-1);
-		return (0);
-	}
+	/*
+	 * Always call TerminateProcess regardless of whether job is set.
+	 * When job is non-NULL, TerminateJobObject kills all processes in
+	 * the job, but TerminateProcess is still needed as a safety net.
+	 * When job is NULL (parent-job fallback), only TerminateProcess
+	 * applies.
+	 */
+	if (process->job != NULL)
+		TerminateJobObject((HANDLE)process->job, exit_code);
 	if (!TerminateProcess((HANDLE)process->process, exit_code))
 		return (-1);
 	return (0);
 }
 
-void
+int
 win32_process_close(struct win32_process *process)
 {
 	uintptr_t	socket;
 	DWORD		result;
+	int		forced = 0;
 
 	if (process == NULL)
-		return;
+		return (0);
 
 	socket = process->bridge_socket;
 	if (socket != (uintptr_t)INVALID_SOCKET)
@@ -460,10 +485,13 @@ win32_process_close(struct win32_process *process)
 		    WIN32_PROCESS_CLOSE_TIMEOUT_MS);
 		if (result != WAIT_OBJECT_0) {
 			/*
-			 * Input worker did not exit.  Do not close handles
-			 * or memset — worker may still access them.
+			 * Input worker did not exit.  Wait a bit longer;
+			 * the bridge socket is shut down and IO cancelled
+			 * so it should exit soon.
 			 */
-			return;
+			WaitForSingleObject((HANDLE)process->input_thread,
+			    2000);
+			forced = 1;
 		}
 		CloseHandle((HANDLE)process->input_thread);
 		process->input_thread = NULL;
@@ -472,11 +500,9 @@ win32_process_close(struct win32_process *process)
 		result = WaitForSingleObject((HANDLE)process->output_thread,
 		    WIN32_PROCESS_CLOSE_TIMEOUT_MS);
 		if (result != WAIT_OBJECT_0) {
-			/*
-			 * Output worker did not exit.  Same reasoning:
-			 * do not release resources it may still use.
-			 */
-			return;
+			WaitForSingleObject((HANDLE)process->output_thread,
+			    2000);
+			forced = 1;
 		}
 		CloseHandle((HANDLE)process->output_thread);
 		process->output_thread = NULL;
@@ -491,6 +517,8 @@ win32_process_close(struct win32_process *process)
 		win32_socket_close(socket);
 	memset(process, 0, sizeof *process);
 	process->bridge_socket = (uintptr_t)INVALID_SOCKET;
+
+	return (forced);
 }
 
 unsigned long
