@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - windows-port-release-candidate
   pull_request:
   workflow_dispatch:
 
@@ -11,9 +12,14 @@ permissions:
   actions: read
   contents: read
 
+concurrency:
+  group: windows-mingw-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release-check:
     runs-on: windows-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
