@@ -237,6 +237,7 @@ win32_pty_spawn(struct win32_pty *pty, const struct win32_pty_options *options,
 	struct win32_pty_input_args	*input_args = NULL;
 	struct win32_pty_output_args	*output_args = NULL;
 	uintptr_t			 sockets[2];
+	DWORD				 saved_error;
 
 	if (pty == NULL || master_socket == NULL) {
 		SetLastError(ERROR_INVALID_PARAMETER);
@@ -302,6 +303,7 @@ win32_pty_spawn(struct win32_pty *pty, const struct win32_pty_options *options,
 	return (0);
 
 fail:
+	saved_error = GetLastError();
 	free(input_args);
 	free(output_args);
 	if (sockets[0] != (uintptr_t)INVALID_SOCKET)
@@ -310,6 +312,7 @@ fail:
 	    sockets[1] != pty->bridge_socket)
 		win32_socket_close(sockets[1]);
 	win32_pty_close(pty);
+	SetLastError(saved_error);
 	return (-1);
 }
 

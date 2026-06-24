@@ -169,6 +169,7 @@ spawn_win32_pane(struct window_pane *wp, struct environ *child,
 	const char			 *cwd, *process_cwd, *shell;
 	int				  environment_count, spawn_argc;
 	int				  cwd_is_unc;
+	DWORD				  spawn_error;
 
 	normalized_cwd = spawn_win32_normalize_cwd(wp->cwd);
 	free(wp->cwd);
@@ -247,7 +248,12 @@ spawn_win32_pane(struct window_pane *wp, struct environ *child,
 	options.rows = ws->ws_row == 0 ? 24 : ws->ws_row;
 
 	if (win32_spawn_pty(&options, pty, &master) != 0) {
-		xasprintf(cause, "spawn failed");
+		spawn_error = GetLastError();
+		if (spawn_error != ERROR_SUCCESS) {
+			xasprintf(cause, "spawn failed (Windows error %lu)",
+			    (unsigned long)spawn_error);
+		} else
+			xasprintf(cause, "spawn failed");
 		free(pty);
 		free(cmd_cwd);
 		spawn_win32_free_environment(environment, environment_count);

@@ -203,6 +203,7 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	wchar_t			*mutable_command = NULL;
 	HRESULT			 hr;
 	int			 attributes_initialized = 0;
+	DWORD			 saved_error;
 	DWORD			 creation_flags = EXTENDED_STARTUPINFO_PRESENT |
 	    CREATE_SUSPENDED|CREATE_NEW_PROCESS_GROUP|
 	    win32_job_creation_flags_for_child();
@@ -317,6 +318,7 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	return (0);
 
 fail:
+	saved_error = GetLastError();
 	if (process.hProcess != NULL)
 		TerminateProcess(process.hProcess, 1);
 	if (process.hThread != NULL)
@@ -341,6 +343,7 @@ fail:
 		CloseHandle(output_write);
 	if (job != NULL)
 		CloseHandle(job);
+	SetLastError(saved_error);
 	return (-1);
 }
 
