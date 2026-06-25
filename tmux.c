@@ -51,6 +51,7 @@
 #ifdef _WIN32
 #include "compat/win32-command.h"
 #include "compat/win32-endpoint.h"
+#include "compat/win32-environment.h"
 #include "compat/win32-socketpair.h"
 #ifndef PATH_MAX
 #define PATH_MAX MAX_PATH
@@ -72,6 +73,27 @@ static char		*make_label(const char *, char **);
 
 static int		 areshell(const char *);
 static const char	*getshell(void);
+
+#ifdef _WIN32
+static int
+load_environment_cb(const char *var, void *arg)
+{
+	environ_put(arg, var, 0);
+	return (0);
+}
+
+static void
+load_environment(struct environ *env)
+{
+	char	**var;
+
+	if (win32_foreach_environment(load_environment_cb, env) == 0)
+		return;
+
+	for (var = TMUX_ENVIRON; *var != NULL; var++)
+		environ_put(env, *var, 0);
+}
+#endif
 
 static __dead void
 usage(int status)
@@ -656,8 +678,12 @@ main(int argc, char **argv)
 		flags = CLIENT_LOGIN;
 
 	global_environ = environ_create();
+#ifdef _WIN32
+	load_environment(global_environ);
+#else
 	for (var = TMUX_ENVIRON; *var != NULL; var++)
 		environ_put(global_environ, *var, 0);
+#endif
 	if ((cwd = find_cwd()) != NULL)
 		environ_set(global_environ, "PWD", 0, "%s", cwd);
 	expand_paths(TMUX_CONF, &cfg_files, &cfg_nfiles, 1);

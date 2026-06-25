@@ -22,6 +22,7 @@
 #include <wchar.h>
 
 wchar_t	*win32_build_environment_block(int, const char *const *);
+int	 win32_foreach_environment(int (*)(const char *, void *), void *);
 
 #endif
 

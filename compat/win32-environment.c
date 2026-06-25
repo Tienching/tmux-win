@@ -65,6 +65,39 @@ win32_environment_cmp(const void *a0, const void *b0)
 	}
 }
 
+int
+win32_foreach_environment(int (*cb)(const char *, void *), void *arg)
+{
+	LPWCH	 block, var;
+	char	*utf8;
+	int	 retval = 0;
+
+	if (cb == NULL) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return (-1);
+	}
+
+	block = GetEnvironmentStringsW();
+	if (block == NULL)
+		return (-1);
+
+	for (var = block; *var != L'\0'; var += wcslen(var) + 1) {
+		if (var[0] == L'=')
+			continue;
+		utf8 = win32_wide_to_utf8(var);
+		if (utf8 == NULL)
+			continue;
+		if (cb(utf8, arg) != 0)
+			retval = -1;
+		free(utf8);
+		if (retval != 0)
+			break;
+	}
+
+	FreeEnvironmentStringsW(block);
+	return (retval);
+}
+
 wchar_t *
 win32_build_environment_block(int count, const char *const *vars)
 {

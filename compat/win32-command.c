@@ -309,16 +309,23 @@ win32_utf8_to_wide_path(const char *s)
 }
 
 char *
-win32_wide_to_utf8_path(const wchar_t *wide)
+win32_wide_to_utf8(const wchar_t *wide)
 {
 	int	 n;
+	int	 flags = WC_ERR_INVALID_CHARS;
 	char	*utf8;
 
 	if (wide == NULL) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return (NULL);
 	}
-	n = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+retry:
+	n = WideCharToMultiByte(CP_UTF8, flags, wide, -1, NULL, 0, NULL,
+	    NULL);
+	if (n <= 0 && flags != 0) {
+		flags = 0;
+		goto retry;
+	}
 	if (n <= 0)
 		return (NULL);
 	utf8 = calloc((size_t)n, sizeof *utf8);
@@ -326,12 +333,18 @@ win32_wide_to_utf8_path(const wchar_t *wide)
 		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
 		return (NULL);
 	}
-	if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, n, NULL,
+	if (WideCharToMultiByte(CP_UTF8, flags, wide, -1, utf8, n, NULL,
 	    NULL) == 0) {
 		free(utf8);
 		return (NULL);
 	}
 	return (utf8);
+}
+
+char *
+win32_wide_to_utf8_path(const wchar_t *wide)
+{
+	return (win32_wide_to_utf8(wide));
 }
 
 wchar_t *

@@ -39,6 +39,7 @@
 
 #ifdef _WIN32
 #include "compat/win32-command.h"
+#include "compat/win32-environment.h"
 #include "compat/win32-handle.h"
 #include "compat/win32-ipc.h"
 #include "compat/win32-job.h"
@@ -68,6 +69,22 @@ static const char	*client_exitsession;
 static char		*client_exitmessage;
 static const char	*client_execshell;
 static const char	*client_execcmd;
+
+#ifdef _WIN32
+static int
+client_send_environment(const char *var, void *arg)
+{
+	size_t	sslen;
+
+	(void)arg;
+
+	sslen = strlen(var) + 1;
+	if (sslen > MAX_IMSGSIZE - IMSG_HEADER_SIZE)
+		return (0);
+	proc_send(client_peer, MSG_IDENTIFY_ENVIRON, -1, var, sslen);
+	return (0);
+}
+#endif
 static int		 client_attached;
 static struct client_files client_files = RB_INITIALIZER(&client_files);
 #ifdef _WIN32
@@ -1342,12 +1359,19 @@ client_send_identify(const char *ttynam, const char *termname, char **caps,
 	proc_send(client_peer, MSG_IDENTIFY_STDOUT, fd, NULL, 0);
 #endif
 
-	for (ss = TMUX_ENVIRON; *ss != NULL; ss++) {
-		sslen = strlen(*ss) + 1;
-		if (sslen > MAX_IMSGSIZE - IMSG_HEADER_SIZE)
-			continue;
-		proc_send(client_peer, MSG_IDENTIFY_ENVIRON, -1, *ss, sslen);
+#ifdef _WIN32
+	if (win32_foreach_environment(client_send_environment, NULL) != 0) {
+#endif
+		for (ss = TMUX_ENVIRON; *ss != NULL; ss++) {
+			sslen = strlen(*ss) + 1;
+			if (sslen > MAX_IMSGSIZE - IMSG_HEADER_SIZE)
+				continue;
+			proc_send(client_peer, MSG_IDENTIFY_ENVIRON, -1, *ss,
+			    sslen);
+		}
+#ifdef _WIN32
 	}
+#endif
 
 	proc_send(client_peer, MSG_IDENTIFY_DONE, -1, NULL, 0);
 }
