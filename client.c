@@ -586,14 +586,69 @@ client_exit(void)
 }
 
 #ifdef _WIN32
+static int
+client_win32_stdin_send(uintptr_t socket, const char *buffer, int n)
+{
+	int	sent, offset = 0;
+
+	while (offset < n) {
+		sent = send((SOCKET)socket, buffer + offset, n - offset, 0);
+		if (sent <= 0) {
+			client_win32_note_stdin_status(
+			    CLIENT_WIN32_STDIN_SEND_FAILED, WSAGetLastError());
+			return (-1);
+		}
+		offset += sent;
+	}
+	return (0);
+}
+
+static int
+client_win32_stdin_read_console(HANDLE input, uintptr_t socket)
+{
+	wchar_t	wbuffer[CLIENT_WIN32_STDIN_BUFFER];
+	char	*buffer;
+	DWORD	read, error;
+	int	size, retval = 0;
+
+	if (!ReadConsoleW(input, wbuffer, nitems(wbuffer), &read, NULL)) {
+		error = GetLastError();
+		if (error == ERROR_OPERATION_ABORTED)
+			return (-1);
+		client_win32_note_stdin_status(CLIENT_WIN32_STDIN_READ_FAILED,
+		    error);
+		return (-1);
+	}
+	if (read == 0)
+		return (0);
+
+	size = WideCharToMultiByte(CP_UTF8, 0, wbuffer, (int)read, NULL, 0,
+	    NULL, NULL);
+	if (size <= 0) {
+		client_win32_note_stdin_status(CLIENT_WIN32_STDIN_READ_FAILED,
+		    GetLastError());
+		return (-1);
+	}
+	buffer = xmalloc((size_t)size);
+	if (WideCharToMultiByte(CP_UTF8, 0, wbuffer, (int)read, buffer, size,
+	    NULL, NULL) == 0) {
+		client_win32_note_stdin_status(CLIENT_WIN32_STDIN_READ_FAILED,
+		    GetLastError());
+		retval = -1;
+	} else if (client_win32_stdin_send(socket, buffer, size) != 0)
+		retval = -1;
+	free(buffer);
+	return (retval);
+}
+
 static DWORD WINAPI
 client_win32_stdin_thread_proc(LPVOID data)
 {
 	uintptr_t	 socket = (uintptr_t)data;
 	HANDLE		 input;
 	char		 buffer[CLIENT_WIN32_STDIN_BUFFER];
-	DWORD		 read;
-	int		 sent, offset;
+	DWORD		 mode, read;
+	int		 input_console;
 
 	input = GetStdHandle(STD_INPUT_HANDLE);
 	if (input == INVALID_HANDLE_VALUE || input == NULL) {
@@ -601,8 +656,14 @@ client_win32_stdin_thread_proc(LPVOID data)
 		    GetLastError());
 		goto out;
 	}
+	input_console = GetConsoleMode(input, &mode);
 
 	for (;;) {
+		if (input_console) {
+			if (client_win32_stdin_read_console(input, socket) != 0)
+				break;
+			continue;
+		}
 		if (!ReadFile(input, buffer, sizeof buffer, &read, NULL)) {
 			client_win32_note_stdin_status(
 			    CLIENT_WIN32_STDIN_READ_FAILED, GetLastError());
@@ -612,18 +673,8 @@ client_win32_stdin_thread_proc(LPVOID data)
 			Sleep(1);
 			continue;
 		}
-		offset = 0;
-		while (offset < (int)read) {
-			sent = send((SOCKET)socket, buffer + offset,
-			    (int)read - offset, 0);
-			if (sent <= 0) {
-				client_win32_note_stdin_status(
-				    CLIENT_WIN32_STDIN_SEND_FAILED,
-				    WSAGetLastError());
-				goto out;
-			}
-			offset += sent;
-		}
+		if (client_win32_stdin_send(socket, buffer, (int)read) != 0)
+			goto out;
 	}
 
 out:
