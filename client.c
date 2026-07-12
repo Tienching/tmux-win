@@ -376,7 +376,7 @@ client_connect(struct event_base *base, const char *path, uint64_t flags)
 #ifdef _WIN32
 	HANDLE		mutex = NULL;
 	uintptr_t	fd;
-	int		error;
+	int		error, owner_alive;
 
 	(void)base;
 	log_debug("socket endpoint is %s", path);
@@ -406,6 +406,12 @@ client_connect(struct event_base *base, const char *path, uint64_t flags)
 				win32_socket_set_blocking(fd, 0);
 				client_win32_unlock_start_server(mutex);
 				return (fd);
+			}
+			owner_alive = win32_ipc_endpoint_owner_alive(path);
+			if (owner_alive != 0) {
+				client_win32_unlock_start_server(mutex);
+				errno = owner_alive > 0 ? ECONNREFUSED : EIO;
+				return ((imsg_fd_t)-1);
 			}
 			client_win32_remove_endpoint(path);
 			if (client_win32_start_server(path) == 0 &&

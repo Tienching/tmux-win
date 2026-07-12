@@ -49,6 +49,7 @@ int	win32_ipc_accept(struct win32_ipc_listener *, uintptr_t *);
 void	win32_ipc_accept_nonblocking(struct win32_ipc_listener *,
 	    win32_ipc_handshake_cb, void *);
 int	win32_ipc_connect(const char *, uintptr_t *);
+int	win32_ipc_endpoint_owner_alive(const char *);
 void	win32_ipc_listener_close(struct win32_ipc_listener *);
 
 #endif

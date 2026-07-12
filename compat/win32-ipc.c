@@ -321,7 +321,7 @@ win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
 {
 	HANDLE		file, process;
 	LARGE_INTEGER	size;
-	DWORD		read;
+	DWORD		exit_code, read;
 	char		*buffer, *end, *pid_end;
 	unsigned long	value, pid;
 	size_t		magic_len = strlen(WIN32_IPC_MAGIC);
@@ -379,6 +379,13 @@ win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
 		free(buffer);
 		return (-1);
 	}
+	if (!GetExitCodeProcess(process, &exit_code) ||
+	    exit_code != STILL_ACTIVE) {
+		CloseHandle(process);
+		SetLastError(ERROR_NOT_FOUND);
+		free(buffer);
+		return (-1);
+	}
 	CloseHandle(process);
 
 	*port = (unsigned short)value;
@@ -390,6 +397,36 @@ bad_format:
 out:
 	free(buffer);
 	return (retval);
+}
+
+/*
+ * Return 1 when the endpoint record is valid and its server is alive, 0 when
+ * the endpoint is absent or its server is gone, and -1 when the record cannot
+ * be trusted. Callers must preserve an untrusted endpoint: a transient read
+ * failure is not proof that it is stale.
+ */
+int
+win32_ipc_endpoint_owner_alive(const char *path)
+{
+	wchar_t		*wpath;
+	unsigned short	 port;
+	unsigned char	 token[WIN32_IPC_TOKEN_SIZE];
+	DWORD		 error;
+	int		 alive = -1;
+
+	wpath = win32_utf8_to_wide(path);
+	if (wpath == NULL)
+		return (-1);
+	if (win32_ipc_read_endpoint(wpath, &port, token) == 0)
+		alive = 1;
+	else {
+		error = GetLastError();
+		if (error == ERROR_FILE_NOT_FOUND ||
+		    error == ERROR_PATH_NOT_FOUND || error == ERROR_NOT_FOUND)
+			alive = 0;
+	}
+	free(wpath);
+	return (alive);
 }
 
 static int
