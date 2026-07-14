@@ -23,6 +23,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include <string.h>
 #include <windows.h>
 
 #include "win32-job.h"
@@ -40,7 +41,25 @@ win32_job_current_process_in_job(void)
 DWORD
 win32_job_creation_flags_for_child(void)
 {
-	if (win32_job_current_process_in_job())
+	JOBOBJECT_EXTENDED_LIMIT_INFORMATION	info;
+
+	if (!win32_job_current_process_in_job())
+		return (0);
+
+	memset(&info, 0, sizeof info);
+	if (!QueryInformationJobObject(NULL, JobObjectExtendedLimitInformation,
+	    &info, sizeof info, NULL))
+		return (0);
+
+	/*
+	 * CREATE_BREAKAWAY_FROM_JOB fails with ERROR_ACCESS_DENIED unless the
+	 * current job explicitly permits breakaway. Task Scheduler commonly
+	 * places logon tasks in a job without that flag, so requesting breakaway
+	 * merely because we are in a job prevents tmux from creating any child.
+	 * SILENT_BREAKAWAY_OK needs no creation flag.
+	 */
+	if (info.BasicLimitInformation.LimitFlags &
+	    JOB_OBJECT_LIMIT_BREAKAWAY_OK)
 		return (CREATE_BREAKAWAY_FROM_JOB);
 	return (0);
 }
