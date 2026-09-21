@@ -105,7 +105,15 @@ function Wait-PaneContains([string]$ServerName, [string]$Target,
 		}
 		Start-Sleep -Milliseconds 200
 	}
-	throw "pane $Target did not contain expected text: $Needle"
+	$state = "unavailable"
+	try {
+		$state = (Invoke-RespawnTmux $ServerName @(
+		    "display-message", "-p", "-t", $Target,
+		    "pid=#{pane_pid} dead=#{pane_dead} command=#{pane_current_command} size=#{pane_width}x#{pane_height}") 5).Out.Trim()
+	} catch {
+		$state = $_.Exception.Message
+	}
+	throw "pane $Target did not contain expected text: $Needle`nstate: $state`nlast capture:`n$capture"
 }
 
 function Stop-RespawnServer([string]$ServerName) {
