@@ -67,6 +67,7 @@ jobs:
             -ClipboardStressIterations 3 `
             -BuildMsix
           .\windows\peer-event-recovery-test.ps1 -CC (Join-Path $mingwBin 'gcc.exe')
+          .\windows\smoke-pipe-output-test.ps1 -Tmux .\tmux.exe
 
       - name: Verify Windows release artifacts
         shell: powershell

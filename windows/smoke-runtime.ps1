@@ -73,6 +73,10 @@ function Invoke-NamedTmux([string]$Name, [string[]]$Arguments,
 	$psi.UseShellExecute = $false
 
 	$process = [System.Diagnostics.Process]::Start($psi)
+	# Drain both pipes while the child runs: show-environment can exceed the
+	# pipe buffer on CI, so waiting first would deadlock a healthy client.
+	$stdoutTask = $process.StandardOutput.ReadToEndAsync()
+	$stderrTask = $process.StandardError.ReadToEndAsync()
 	if (-not $process.WaitForExit($Timeout * 1000)) {
 		try {
 			$process.Kill()
@@ -81,8 +85,8 @@ function Invoke-NamedTmux([string]$Name, [string[]]$Arguments,
 		throw "tmux timed out: $($Arguments -join ' ')"
 	}
 
-	$stdout = $process.StandardOutput.ReadToEnd()
-	$stderr = $process.StandardError.ReadToEnd()
+	$stdout = $stdoutTask.GetAwaiter().GetResult()
+	$stderr = $stderrTask.GetAwaiter().GetResult()
 	if ($process.ExitCode -ne 0) {
 		throw @"
 tmux failed: $($Arguments -join ' ')
