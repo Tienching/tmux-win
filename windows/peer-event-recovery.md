@@ -13,6 +13,12 @@ the existing retry behavior rather than disconnecting a healthy peer. Healthy
 peers and session PTYs are not removed. Unclassified event-loop failures back
 off rather than spin.
 
+Process bridge workers must also have sole ownership of their stdin/stdout
+pipe handles. After a worker starts, the parent drops its copy; otherwise
+worker teardown followed by parent cleanup closes the same handle twice and
+may invalidate a socket that has reused that numeric value. Partial startup
+failures retain parent ownership only for workers that did not start.
+
 ## Targeted tests
 
 With a MinGW UCRT compiler and matching libevent DLLs on PATH:
@@ -25,6 +31,9 @@ This compiles the actual proc.c into deterministic lifecycle tests and a real
 Winsock/libevent integration test. The latter closes its own watched socket,
 asserts the original WSAENOTSOCK failure, then verifies recovery and delivery on
 an unrelated socket. It does not attach to an existing tmux server.
+The process ownership regression retains tracked pipe handles until the test
+assertion, making duplicate closes deterministic, and separately checks real
+stdin EOF with normal handle closing. It covers both worker creation failures.
 
 ## Isolated native terminal test
 

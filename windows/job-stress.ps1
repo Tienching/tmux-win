@@ -150,7 +150,14 @@ function Wait-JobOutputFiles([string]$Name, [object[]]$Outputs,
 	$missingText = @($missing | ForEach-Object {
 	    "{0} in {1}" -f $_.Marker, $_.Path
 	})
-	throw "$Name missing outputs: $($missingText -join ', ')"
+	$diagnostic = "unavailable"
+	try {
+		$diagnostic = (Invoke-JobTmux @(
+		    "capture-pane", "-p", "-M", "-t", "job:0.0") 5).Out
+	} catch {
+		$diagnostic = $_.Exception.Message
+	}
+	throw "$Name missing outputs: $($missingText -join ', ')`nlast pane mode:`n$diagnostic"
 }
 
 function Wait-NoProcessMarker([string]$Marker, [int]$Timeout = $TimeoutSeconds) {

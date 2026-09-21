@@ -40,3 +40,12 @@ $integration = Join-Path $outDir "peer-event-integration-test.exe"
     '-Wl,--gc-sections' -lws2_32 -levent -o $integration
 if ($LASTEXITCODE -ne 0) { throw "Integration test compilation failed" }
 Invoke-RegressionExecutable $integration
+$ownership = Join-Path $outDir "process-handle-ownership-test.exe"
+& $CC -O1 -D_WIN32_WINNT=0x0601 `
+    (Join-Path $PSScriptRoot "process-handle-ownership-test.c") `
+    (Join-Path $root "compat/win32-socketpair.c") `
+    (Join-Path $root "compat/win32-process-tree.c") `
+    (Join-Path $root "compat/win32-job.c") `
+    -lws2_32 -o $ownership
+if ($LASTEXITCODE -ne 0) { throw "Process ownership test compilation failed" }
+Invoke-RegressionExecutable $ownership
