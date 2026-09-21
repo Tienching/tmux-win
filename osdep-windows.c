@@ -104,23 +104,60 @@ osdep_win32_find_child(HANDLE snapshot, DWORD parent, DWORD *child)
 	return (0);
 }
 
+/* These helpers run on the server thread. Reuse a bounded-age process
+ * snapshot, and never refresh it in the middle of format expansion. */
+static HANDLE osdep_win32_snapshot = INVALID_HANDLE_VALUE;
+static ULONGLONG osdep_win32_snapshot_at;
+static int osdep_win32_snapshot_ready;
+static u_int osdep_win32_format_depth;
+
+static void
+osdep_win32_refresh_snapshot(void)
+{
+	ULONGLONG now = GetTickCount64();
+
+	if (osdep_win32_snapshot_ready &&
+	    now - osdep_win32_snapshot_at < 500)
+		return;
+	if (osdep_win32_snapshot != INVALID_HANDLE_VALUE)
+		CloseHandle(osdep_win32_snapshot);
+	osdep_win32_snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	/* Back off after failures too; date the cache after the slow call. */
+	osdep_win32_snapshot_at = GetTickCount64();
+	osdep_win32_snapshot_ready = 1;
+}
+
+void
+osdep_format_begin(void)
+{
+	if (osdep_win32_format_depth == 0)
+		osdep_win32_refresh_snapshot();
+	osdep_win32_format_depth++;
+}
+
+void
+osdep_format_end(void)
+{
+	if (osdep_win32_format_depth != 0)
+		osdep_win32_format_depth--;
+}
+
 static DWORD
 osdep_win32_active_pid(DWORD pid)
 {
-	HANDLE	snapshot;
 	DWORD	child;
 	u_int	i;
 
-	snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (snapshot == INVALID_HANDLE_VALUE)
+	if (osdep_win32_format_depth == 0)
+		osdep_win32_refresh_snapshot();
+	if (osdep_win32_snapshot == INVALID_HANDLE_VALUE)
 		return (pid);
 
 	for (i = 0; i < 64; i++) {
-		if (!osdep_win32_find_child(snapshot, pid, &child))
+		if (!osdep_win32_find_child(osdep_win32_snapshot, pid, &child))
 			break;
 		pid = child;
 	}
-	CloseHandle(snapshot);
 	return (pid);
 }
 
