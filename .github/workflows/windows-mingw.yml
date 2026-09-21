@@ -44,6 +44,7 @@ jobs:
         shell: powershell
         run: |
           $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
+          .\windows\probe-mingw-path-test.ps1
           .\windows\release-check.ps1 `
             -CC 'C:\msys64\mingw64\bin\gcc.exe' `
             -CXX 'C:\msys64\mingw64\bin\g++.exe' `

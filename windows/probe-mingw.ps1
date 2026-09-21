@@ -640,7 +640,12 @@ function Get-Msys2Prefixes {
 		}
 		if ((Split-Path -Leaf $entry) -ieq "bin") {
 			$parent = Split-Path -Parent $entry
-			if ($systems -contains (Split-Path -Leaf $parent).ToLowerInvariant()) {
+			# PATH may contain a relative "bin" with no parent component.
+			if ([string]::IsNullOrWhiteSpace($parent)) {
+				continue
+			}
+			$parentName = Split-Path -Leaf $parent
+			if ($systems -icontains $parentName) {
 				Add-Prefix $parent
 			}
 		}
