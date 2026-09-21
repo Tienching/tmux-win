@@ -704,10 +704,14 @@ try {
 	$defaultAppData = Join-Path $defaultRoot "AppData"
 	$defaultHome = Join-Path $defaultRoot "Home"
 	$defaultLocalAppData = Join-Path $defaultRoot "LocalAppData"
+	# The endpoint uses SHGetKnownFolderPath, whose registered path expands
+	# USERPROFILE rather than LOCALAPPDATA. The synthetic profile must contain
+	# that directory as well; otherwise the known-folder lookup fails.
+	$defaultKnownLocalAppData = Join-Path $defaultHome "AppData\Local"
 	New-Item -ItemType Directory -Force -Path `
 	    (Join-Path $defaultProgramData "tmux"), `
 	    (Join-Path $defaultAppData "tmux"), `
-	    $defaultHome, $defaultLocalAppData | Out-Null
+	    $defaultHome, $defaultLocalAppData, $defaultKnownLocalAppData | Out-Null
 	Set-Content -LiteralPath `
 	    (Join-Path $defaultProgramData "tmux\tmux.conf") `
 	    -Encoding ascii -Value `
