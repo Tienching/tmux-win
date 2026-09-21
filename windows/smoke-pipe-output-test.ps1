@@ -15,6 +15,7 @@ foreach ($name in @('ConvertTo-WindowsArgument', 'Invoke-NamedTmux')) {
     . ([scriptblock]::Create($definition.Extent.Text))
 }
 $label = 'codex-pipe-test-' + [guid]::NewGuid().ToString('N')
+$failure = $null
 try {
     Invoke-NamedTmux $label @('new-session', '-d', '-s', 'pipe-test', 'cmd.exe') | Out-Null
     Invoke-NamedTmux $label @('set-environment', '-g', 'TMUX_PIPE_TEST_A', ('A' * 16000)) | Out-Null
@@ -25,6 +26,14 @@ try {
         throw 'Large environment output was truncated'
     }
     Write-Output 'PASS: redirected output larger than pipe capacity drains without deadlock'
+} catch {
+    $failure = $_
 } finally {
-    Invoke-NamedTmux $label @('kill-server') | Out-Null
+    try {
+        Invoke-NamedTmux $label @('kill-server') | Out-Null
+    } catch {
+        if ($null -eq $failure) { $failure = $_ }
+        else { Write-Warning ('Isolated server cleanup also failed: ' + $_.Exception.Message) }
+    }
 }
+if ($null -ne $failure) { throw $failure }
