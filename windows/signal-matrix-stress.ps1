@@ -96,7 +96,12 @@ function Wait-CurrentCommand([string]$ServerName, [string]$Target,
 		}
 		Start-Sleep -Milliseconds 200
 	}
-	throw "pane $Target did not reach command ${Expected}: $current"
+	$capture = "unavailable"
+	try {
+		$capture = Invoke-SignalTmux $ServerName @(
+		    "capture-pane", "-p", "-t", $Target) 5
+	} catch { $capture = $_.Exception.Message }
+	throw "pane $Target did not reach command ${Expected}: $current; phase=$script:signalPhase`n$capture"
 }
 
 function Wait-FileContains([string]$Path, [string]$Needle,
@@ -209,6 +214,8 @@ if ($Iterations -lt 1) {
 $serverName = "signal-matrix-" + [Guid]::NewGuid().ToString("N")
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) $serverName
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
+$timeoutExe = Join-Path ([Environment]::SystemDirectory) 'timeout.exe'
+$timeoutCommand = '"' + $timeoutExe + '" /t 30 /nobreak'
 
 try {
 	for ($i = 1; $i -le $Iterations; $i++) {
@@ -217,32 +224,43 @@ try {
 		    "new-session", "-d", "-s", "signals", "cmd.exe") |
 		    Out-Null
 		Start-Sleep -Milliseconds 700
+		$script:signalPhase = 'timeout Ctrl-C'
 
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
-		    "timeout /t 30 /nobreak", "Enter") | Out-Null
+		    $timeoutCommand, "Enter") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "timeout.exe"
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		# A process name alone does not mean PowerShell has installed its
+		# control handler. Signal only after its command actually starts.
+		$sleepReady = Join-Path $temp "ctrl-c-ready-$i.txt"
+		$script:signalPhase = 'PowerShell Ctrl-C'
+		$readyLiteral = $sleepReady.Replace("'", "''")
+		$sleepCommand = 'powershell -NoProfile -Command "' +
+		    "[IO.File]::WriteAllText('$readyLiteral','ready'); Start-Sleep -Seconds 30" + '"'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
-		    'powershell -NoProfile -Command "Start-Sleep -Seconds 30"',
+		    $sleepCommand,
 		    "Enter") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "powershell.exe"
+		Wait-FileContains $sleepReady "ready"
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'timeout Ctrl-Break'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
-		    "timeout /t 30 /nobreak", "Enter") | Out-Null
+		    $timeoutCommand, "Enter") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "timeout.exe"
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'explicit Ctrl-Break probe'
 		$breakScript = Join-Path $temp "ctrl-break-$i.ps1"
 		$breakReady = Join-Path $temp "ctrl-break-ready-$i.txt"
 		$breakOutput = Join-Path $temp "ctrl-break-output-$i.txt"
@@ -260,6 +278,7 @@ try {
 		Wait-FileContains $breakOutput "CTRL_BREAK"
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'choice Ctrl-C'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
 		    "choice /c yn /t 30 /d y", "Enter") | Out-Null
@@ -268,6 +287,7 @@ try {
 		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'choice Ctrl-Break'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
 		    "choice /c yn /t 30 /d y", "Enter") | Out-Null
@@ -276,6 +296,7 @@ try {
 		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'raw ETX probe'
 		$rawScript = Join-Path $temp "raw-etx-$i.ps1"
 		$rawReady = Join-Path $temp "raw-etx-ready-$i.txt"
 		$rawOutput = Join-Path $temp "raw-etx-output-$i.txt"
