@@ -170,8 +170,8 @@ function Remove-TemporaryLocalUser([string]$Name) {
 
 function Assert-EndpointFormat([string]$Path) {
 	$lines = @(Get-Content -LiteralPath $Path)
-	if ($lines.Count -ne 3) {
-		throw "endpoint should contain exactly 3 lines"
+	if ($lines.Count -ne 4) {
+		throw "endpoint should contain exactly 4 lines"
 	}
 	if ($lines[0] -ne "tmux-win32-ipc-v1") {
 		throw "endpoint magic mismatch: $($lines[0])"
@@ -179,12 +179,16 @@ function Assert-EndpointFormat([string]$Path) {
 	if ($lines[1] -notmatch '^[0-9]+$') {
 		throw "endpoint port is not numeric: $($lines[1])"
 	}
-	if ($lines[2] -notmatch '^[0-9a-f]{64}$') {
+	if ($lines[2] -notmatch '^[1-9][0-9]*$' -or
+	    $null -eq (Get-Process -Id ([int]$lines[2]) -ErrorAction SilentlyContinue)) {
+		throw "endpoint server PID is missing or not alive"
+	}
+	if ($lines[3] -notmatch '^[0-9a-f]{64}$') {
 		throw "endpoint token is not a 32-byte lowercase hex token"
 	}
 	return [pscustomobject]@{
 		Port = [int]$lines[1]
-		TokenLength = $lines[2].Length
+		TokenLength = $lines[3].Length
 	}
 }
 
@@ -479,10 +483,11 @@ try {
 
 $checks = [System.Collections.Generic.List[object]]::new()
 $serverName = "ipc-boundary-" + [Guid]::NewGuid().ToString("N")
-$endpoint = Join-Path (Join-Path $env:LOCALAPPDATA "tmux") `
-    ($serverName + ".endpoint")
 $current = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $currentSid = $current.User.Value
+$endpointRoot = Join-Path (Join-Path `
+    ([Environment]::GetFolderPath('LocalApplicationData')) 'tmux') $currentSid
+$endpoint = Join-Path $endpointRoot ($serverName + ".endpoint")
 $isAdministrator = Test-IsAdministrator
 $temporaryUserName = ""
 $temporaryUserCreated = $false
