@@ -212,13 +212,25 @@ proc_win32_poll_cb(__unused evutil_socket_t fd, __unused short events, void *arg
 	 * queues a reply from inside a read callback. Poll nonblocking sockets
 	 * on a short persistent timer so IPC makes progress.
 	 */
-	if (win32_socket_pending(peer->ibuf.fd, &pending) == 0 && pending != 0)
+	if (win32_socket_pending(peer->ibuf.fd, &pending) != 0) {
+		if (WSAGetLastError() == WSAENOTSOCK) {
+			event_del(&peer->event);
+			event_del(&peer->poll_event);
+			peer->ibuf.fd = (imsg_fd_t)INVALID_SOCKET;
+			peer->flags |= PEER_BAD;
+			/* Dispatch may destroy peer. Never touch it afterwards. */
+			peer->dispatchcb(NULL, peer->arg);
+			return;
+		}
+		/* Other probe errors do not prove that the socket is invalid. */
+		pending = 0;
+	}
+	if (pending != 0)
 		ready |= EV_READ;
 	if (imsgbuf_queuelen(&peer->ibuf) > 0)
 		ready |= EV_WRITE;
 	if (ready != 0) {
 		peer->poll_idle_count = 0;
-		proc_event_cb(peer->ibuf.fd, ready, peer);
 		tv.tv_sec = 0;
 		tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
 	} else {
@@ -228,7 +240,46 @@ proc_win32_poll_cb(__unused evutil_socket_t fd, __unused short events, void *arg
 		else
 			tv.tv_sec = 0, tv.tv_usec = WIN32_POLL_INTERVAL_MS * 1000;
 	}
+	/*
+	 * Arm first: proc_event_cb can synchronously remove and free peer.
+	 * Its teardown then cancels this timer, rather than us rearming freed
+	 * memory after the callback returns.
+	 */
 	evtimer_add(&peer->poll_event, &tv);
+	if (ready != 0)
+		proc_event_cb(peer->ibuf.fd, ready, peer);
+}
+
+/* Remove broken IPC watchers without taking healthy sessions down. */
+static u_int
+proc_win32_recover_peers(struct tmuxproc *tp)
+{
+	struct tmuxpeer *peer;
+	unsigned long pending;
+	u_int removed = 0;
+
+	for (;;) {
+		TAILQ_FOREACH(peer, &tp->peers, entry) {
+			if (peer->ibuf.fd == (imsg_fd_t)INVALID_SOCKET)
+				continue;
+			if (win32_socket_pending(peer->ibuf.fd, &pending) != 0 &&
+			    WSAGetLastError() == WSAENOTSOCK)
+				break;
+		}
+		if (peer == NULL)
+			break;
+		log_debug("%s: removing invalid IPC socket %llu", __func__,
+		    (unsigned long long)peer->ibuf.fd);
+		/* Do not close a stale handle that may now name a different object. */
+		event_del(&peer->event);
+		event_del(&peer->poll_event);
+		peer->ibuf.fd = (imsg_fd_t)INVALID_SOCKET;
+		peer->flags |= PEER_BAD;
+		peer->dispatchcb(NULL, peer->arg);
+		removed++;
+		/* Callbacks can alter the list; restart rather than retain next. */
+	}
+	return (removed);
 }
 #endif
 
@@ -336,9 +387,32 @@ proc_start(const char *name)
 void
 proc_loop(struct tmuxproc *tp, int (*loopcb)(void))
 {
+#ifdef _WIN32
+	int rc;
+	u_int removed;
+	ULONGLONG now, warned = 0;
+#endif
 	log_debug("%s loop enter", tp->name);
-	do
+	do {
+#ifdef _WIN32
+		rc = event_loop(EVLOOP_ONCE);
+		if (rc < 0) {
+			removed = proc_win32_recover_peers(tp);
+			now = GetTickCount64();
+			if (warned == 0 || now - warned >= 1000) {
+				log_debug("event loop failed; removed %u invalid IPC peers",
+				    removed);
+				warned = now;
+			}
+			/* Unknown watcher failures must not become a full-core spin. */
+			if (removed == 0)
+				Sleep(10);
+		} else if (rc > 0)
+			Sleep(10);
+#else
 		event_loop(EVLOOP_ONCE);
+#endif
+	}
 	while (!tp->exit && (loopcb == NULL || !loopcb ()));
 	log_debug("%s loop exit", tp->name);
 }
