@@ -54,6 +54,7 @@ jobs:
           .\windows\ipc-startup-regression.ps1 -CC (Join-Path $mingwBin 'gcc.exe')
           .\windows\smoke-pane-path-test.ps1
           .\windows\hosted-ci-audit-test.ps1
+          .\windows\workflow-report-args-test.ps1
           .\windows\release-check.ps1 `
             -CC (Join-Path $mingwBin 'gcc.exe') `
             -CXX (Join-Path $mingwBin 'g++.exe') `
@@ -129,39 +130,37 @@ jobs:
       - name: Write Windows completion audit
         shell: powershell
         run: |
-          $completionArgs = @(
-            "-SigningSummary", ".\dist\signing-audit.json",
-            "-IpcBoundarySummary", ".\dist\ipc-boundary-audit.json",
-            "-HostedCiSummary", ".\dist\hosted-ci-audit.json",
-            "-SourceStateSummary", ".\dist\source-state-audit.json",
-            "-HostedCiRunUrl", "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          )
+          $completionArgs = @{
+            SigningSummary = ".\dist\signing-audit.json"
+            IpcBoundarySummary = ".\dist\ipc-boundary-audit.json"
+            HostedCiSummary = ".\dist\hosted-ci-audit.json"
+            SourceStateSummary = ".\dist\source-state-audit.json"
+            HostedCiRunUrl = "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
           if (Test-Path .\dist\linux-parity-matrix.json) {
-            $completionArgs += @(
-              "-LinuxParitySummary", ".\dist\linux-parity-matrix.json")
+            $completionArgs.LinuxParitySummary = ".\dist\linux-parity-matrix.json"
           }
           if (Test-Path .\dist\linux-behavior-parity.json) {
-            $completionArgs += @(
-              "-LinuxBehaviorSummary", ".\dist\linux-behavior-parity.json")
+            $completionArgs.LinuxBehaviorSummary = ".\dist\linux-behavior-parity.json"
           }
           .\windows\completion-audit.ps1 @completionArgs
 
       - name: Verify Windows extended evidence
         shell: powershell
         run: |
-          $verifyArgs = @(
-            "-RequireMsix",
-            "-RequireSigningAudit",
-            "-RequireCompletionAudit",
-            "-RequireIpcBoundaryAudit",
-            "-RequireHostedCiAudit",
-            "-RequireSourceStateAudit"
-          )
+          $verifyArgs = @{
+            RequireMsix = $true
+            RequireSigningAudit = $true
+            RequireCompletionAudit = $true
+            RequireIpcBoundaryAudit = $true
+            RequireHostedCiAudit = $true
+            RequireSourceStateAudit = $true
+          }
           if (Test-Path .\dist\linux-parity-matrix.json) {
-            $verifyArgs += "-RequireLinuxParity"
+            $verifyArgs.RequireLinuxParity = $true
           }
           if (Test-Path .\dist\linux-behavior-parity.json) {
-            $verifyArgs += "-RequireLinuxBehaviorParity"
+            $verifyArgs.RequireLinuxBehaviorParity = $true
           }
           .\windows\verify-release-artifacts.ps1 @verifyArgs
 
