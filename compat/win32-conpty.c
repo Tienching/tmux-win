@@ -29,11 +29,13 @@
 #include <windows.h>
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <wchar.h>
 
 #include "win32-conpty.h"
 #include "win32-job.h"
+#include "win32-process-tree.h"
 
 #ifndef __unused
 #ifdef __GNUC__
@@ -179,6 +181,137 @@ win32_close_pseudoconsole(HPCON pseudoconsole)
 	CloseHandle(thread);
 }
 
+/* The wrapper stays alive; the actual command handles console events. */
+static BOOL WINAPI
+win32_conpty_child_control(DWORD event)
+{
+	return (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT);
+}
+
+int
+win32_conpty_child_main(void)
+{
+	wchar_t *line = GetCommandLineW(), *command;
+	STARTUPINFOEXW startup;
+	PROCESS_INFORMATION process;
+	DWORD status = 1, error = ERROR_INVALID_PARAMETER, written;
+	SECURITY_ATTRIBUTES security = { sizeof security, NULL, TRUE };
+	HANDLE input = INVALID_HANDLE_VALUE, output = INVALID_HANDLE_VALUE, ack;
+	HANDLE inherited[2];
+	SIZE_T attributes_size = 0;
+	int attributes_initialized = 0;
+
+	/* Skip our executable and the internal switch, preserving raw quoting. */
+	if (*line == L'"') {
+		line++;
+		while (*line && *line != L'"') line++;
+		if (*line) line++;
+	} else {
+		while (*line && *line != L' ' && *line != L'\t') line++;
+	}
+	while (*line == L' ' || *line == L'\t') line++;
+	while (*line && *line != L' ' && *line != L'\t') line++;
+	while (*line == L' ' || *line == L'\t') line++;
+	ack = (HANDLE)(uintptr_t)wcstoull(line, &line, 10);
+	if (ack == NULL || ack == INVALID_HANDLE_VALUE) return (1);
+	/* The startup channel must never leak into the actual command. */
+	if (!SetHandleInformation(ack, HANDLE_FLAG_INHERIT, 0)) return (1);
+	while (*line == L' ' || *line == L'\t') line++;
+	if (!*line) return (1);
+	command = win32_wcsdup(line);
+	if (command == NULL) return (1);
+	memset(&startup, 0, sizeof startup);
+	memset(&process, 0, sizeof process);
+	/* CREATE_NEW_PROCESS_GROUP disables Ctrl-C. Reset only in this child. */
+	if (!SetConsoleCtrlHandler(NULL, FALSE) ||
+	    !SetConsoleCtrlHandler(win32_conpty_child_control, TRUE)) {
+		error = GetLastError();
+		goto child_done;
+	}
+	startup.StartupInfo.cb = sizeof startup;
+	/* GUI-subsystem tmux may not have initialized standard handles. */
+	input = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+	    FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, NULL);
+	output = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+	    FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, NULL);
+	if (input == INVALID_HANDLE_VALUE || output == INVALID_HANDLE_VALUE) {
+		error = GetLastError();
+		goto child_done;
+	}
+	startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+	startup.StartupInfo.hStdInput = input;
+	startup.StartupInfo.hStdOutput = output;
+	startup.StartupInfo.hStdError = output;
+	InitializeProcThreadAttributeList(NULL, 1, 0, &attributes_size);
+	startup.lpAttributeList = HeapAlloc(GetProcessHeap(), 0, attributes_size);
+	if (startup.lpAttributeList == NULL) {
+		error = ERROR_OUTOFMEMORY;
+		goto child_done;
+	}
+	if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0,
+	    &attributes_size)) {
+		error = GetLastError();
+		goto child_done;
+	}
+	attributes_initialized = 1;
+	inherited[0] = input;
+	inherited[1] = output;
+	if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0,
+	    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof inherited,
+	    NULL, NULL) || !CreateProcessW(NULL, command, NULL, NULL, TRUE,
+	    EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &startup.StartupInfo,
+	    &process)) {
+		error = GetLastError();
+		goto child_done;
+	}
+	error = ERROR_SUCCESS;
+child_done:
+	if ((!WriteFile(ack, &error, sizeof error, &written, NULL) ||
+	    written != sizeof error) && process.hProcess != NULL) {
+		win32_process_tree_terminate_children(process.dwProcessId,
+		    process.hProcess, 1);
+		TerminateProcess(process.hProcess, 1);
+		CloseHandle(process.hThread);
+		CloseHandle(process.hProcess);
+		error = ERROR_BROKEN_PIPE;
+	}
+	CloseHandle(ack);
+	if (attributes_initialized)
+		DeleteProcThreadAttributeList(startup.lpAttributeList);
+	if (startup.lpAttributeList != NULL)
+		HeapFree(GetProcessHeap(), 0, startup.lpAttributeList);
+	if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
+	if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
+	free(command);
+	if (error != ERROR_SUCCESS) return (1);
+	CloseHandle(process.hThread);
+	if (WaitForSingleObject(process.hProcess, INFINITE) == WAIT_OBJECT_0)
+		GetExitCodeProcess(process.hProcess, &status);
+	CloseHandle(process.hProcess);
+	return ((int)status);
+}
+
+static wchar_t *
+win32_conpty_child_command(const wchar_t *command, HANDLE ack)
+{
+	wchar_t executable[32768], *result;
+	DWORD length;
+	size_t capacity;
+
+	length = GetModuleFileNameW(NULL, executable, 32768);
+	if (!length || length >= 32768) return (NULL);
+	capacity = length + wcslen(command) + 64;
+	if (capacity > 32767) {
+		SetLastError(ERROR_FILENAME_EXCED_RANGE);
+		return (NULL);
+	}
+	result = calloc(capacity, sizeof *result);
+	if (result == NULL) return (NULL);
+	swprintf(result, capacity, L"\"%ls\" --win32-conpty-child %llu %ls",
+	    executable, (unsigned long long)(uintptr_t)ack, command);
+	return (result);
+}
+
 int
 win32_conpty_available(void)
 {
@@ -194,6 +327,8 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	HANDLE			 input_read = NULL, input_write = NULL;
 	HANDLE			 output_read = NULL, output_write = NULL;
 	HANDLE			 job = NULL;
+	HANDLE			 ack_read = NULL, ack_write = NULL;
+	SECURITY_ATTRIBUTES	 security = { sizeof security, NULL, TRUE };
 	HPCON			 pseudoconsole = NULL;
 	STARTUPINFOEXW		 startup;
 	PROCESS_INFORMATION	 process;
@@ -205,7 +340,7 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	int			 attributes_initialized = 0;
 	DWORD			 saved_error;
 	DWORD			 creation_flags = EXTENDED_STARTUPINFO_PRESENT |
-	    CREATE_SUSPENDED|CREATE_NEW_PROCESS_GROUP|
+	    CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP |
 	    win32_job_creation_flags_for_child();
 
 	if (pty == NULL) {
@@ -230,6 +365,9 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 		goto fail;
 	if (!CreatePipe(&output_read, &output_write, NULL, 0))
 		goto fail;
+	if (!CreatePipe(&ack_read, &ack_write, &security, 0) ||
+	    !SetHandleInformation(ack_read, HANDLE_FLAG_INHERIT, 0))
+		goto fail;
 	job = CreateJobObjectW(NULL, NULL);
 	if (job == NULL)
 		goto fail;
@@ -252,13 +390,13 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	CloseHandle(output_write);
 	output_write = NULL;
 
-	InitializeProcThreadAttributeList(NULL, 1, 0, &attributes_size);
+	InitializeProcThreadAttributeList(NULL, 2, 0, &attributes_size);
 	attributes = HeapAlloc(GetProcessHeap(), 0, attributes_size);
 	if (attributes == NULL) {
 		SetLastError(ERROR_OUTOFMEMORY);
 		goto fail;
 	}
-	if (!InitializeProcThreadAttributeList(attributes, 1, 0,
+	if (!InitializeProcThreadAttributeList(attributes, 2, 0,
 	    &attributes_size))
 		goto fail;
 	attributes_initialized = 1;
@@ -267,7 +405,11 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	    sizeof pseudoconsole, NULL, NULL))
 		goto fail;
 
-	mutable_command = win32_wcsdup(command);
+	if (!UpdateProcThreadAttribute(attributes, 0,
+	    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &ack_write, sizeof ack_write,
+	    NULL, NULL))
+		goto fail;
+	mutable_command = win32_conpty_child_command(command, ack_write);
 	if (mutable_command == NULL) {
 		SetLastError(ERROR_OUTOFMEMORY);
 		goto fail;
@@ -280,7 +422,7 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	if (environment != NULL)
 		creation_flags |= CREATE_UNICODE_ENVIRONMENT;
 
-	if (!CreateProcessW(NULL, mutable_command, NULL, NULL, FALSE,
+	if (!CreateProcessW(NULL, mutable_command, NULL, NULL, TRUE,
 	    creation_flags, (LPVOID)environment, cwd, &startup.StartupInfo,
 	    &process))
 		goto fail;
@@ -303,6 +445,31 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	}
 	if (ResumeThread(process.hThread) == (DWORD)-1)
 		goto fail;
+	CloseHandle(ack_write);
+	ack_write = NULL;
+	{
+		ULONGLONG deadline = GetTickCount64() + 5000;
+		DWORD available, received, child_error;
+		for (;;) {
+			if (!PeekNamedPipe(ack_read, NULL, 0, NULL, &available, NULL))
+				goto fail;
+			if (available >= sizeof child_error) break;
+			if (GetTickCount64() >= deadline) {
+				SetLastError(ERROR_TIMEOUT);
+				goto fail;
+			}
+			Sleep(5);
+		}
+		if (!ReadFile(ack_read, &child_error, sizeof child_error,
+		    &received, NULL) || received != sizeof child_error)
+			goto fail;
+		if (child_error != ERROR_SUCCESS) {
+			SetLastError(child_error);
+			goto fail;
+		}
+	}
+	CloseHandle(ack_read);
+	ack_read = NULL;
 
 	DeleteProcThreadAttributeList(attributes);
 	HeapFree(GetProcessHeap(), 0, attributes);
@@ -319,8 +486,14 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 
 fail:
 	saved_error = GetLastError();
-	if (process.hProcess != NULL)
+	if (ack_read != NULL) CloseHandle(ack_read);
+	if (ack_write != NULL) CloseHandle(ack_write);
+	if (process.hProcess != NULL) {
+		win32_process_tree_terminate_children(process.dwProcessId,
+		    process.hProcess, 1);
+		if (job != NULL) TerminateJobObject(job, 1);
 		TerminateProcess(process.hProcess, 1);
+	}
 	if (process.hThread != NULL)
 		CloseHandle(process.hThread);
 	if (process.hProcess != NULL)
@@ -331,8 +504,6 @@ fail:
 		HeapFree(GetProcessHeap(), 0, attributes);
 	}
 	free(mutable_command);
-	if (pseudoconsole != NULL)
-		conpty_api.close(pseudoconsole);
 	if (input_read != NULL)
 		CloseHandle(input_read);
 	if (input_write != NULL)
@@ -343,6 +514,8 @@ fail:
 		CloseHandle(output_write);
 	if (job != NULL)
 		CloseHandle(job);
+	/* No reader exists on spawn failure; close pipes before bounded close. */
+	win32_close_pseudoconsole(pseudoconsole);
 	SetLastError(saved_error);
 	return (-1);
 }

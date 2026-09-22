@@ -179,8 +179,12 @@ using System;
 using System.Runtime.InteropServices;
 public static class TmuxSignalMatrixCtrlHandler {
 	public delegate bool ConsoleCtrlDelegate(uint type);
+	public static int Events;
 	public static ConsoleCtrlDelegate Handler = new ConsoleCtrlDelegate(Ignore);
-	public static bool Ignore(uint type) { return true; }
+	public static bool Ignore(uint type) {
+		System.Threading.Interlocked.Increment(ref Events);
+		return true;
+	}
 	[DllImport("kernel32.dll")]
 	public static extern bool SetConsoleCtrlHandler(
 	    ConsoleCtrlDelegate handler, bool add);
@@ -191,13 +195,19 @@ Add-Type -TypeDefinition $source
     [TmuxSignalMatrixCtrlHandler]::Handler, $true)
 [Console]::TreatControlCAsInput = $true
 Set-Content -LiteralPath $Ready -Encoding ascii -Value "ready"
+$etxCount = 0
 $deadline = [DateTime]::UtcNow.AddSeconds(20)
 while ([DateTime]::UtcNow -lt $deadline) {
 	if ([Console]::KeyAvailable) {
 		$key = [Console]::ReadKey($true)
 		if ([int][char]$key.KeyChar -eq 3) {
+			$etxCount++
+		} elseif ($key.KeyChar -eq 'x') {
+			if ($etxCount -ne 20) { exit 3 }
+			Start-Sleep -Milliseconds 200
+			if ([TmuxSignalMatrixCtrlHandler]::Events -ne 0) { exit 4 }
 			Set-Content -LiteralPath $Output -Encoding ascii `
-			    -Value "ETX"
+			    -Value "ETX_EXACTLY_20"
 			exit 0
 		}
 	}
@@ -224,6 +234,16 @@ try {
 		    "new-session", "-d", "-s", "signals", "cmd.exe") |
 		    Out-Null
 		Start-Sleep -Milliseconds 700
+		$witness = Join-Path $temp "witness-$i.txt"
+		$witnessLiteral = $witness.Replace("'", "''")
+		$heartbeat = Join-Path $temp "heartbeat-$i.txt"
+		$heartbeatLiteral = $heartbeat.Replace("'", "''")
+		$witnessCommand = 'powershell -NoProfile -Command "' +
+		    "[IO.File]::WriteAllText('$witnessLiteral',[string]`$PID); while (`$true) { [IO.File]::WriteAllText('$heartbeatLiteral','beat'); Start-Sleep -Milliseconds 100 }" + '"'
+		Invoke-SignalTmux $serverName @("new-window", "-d", "-t", "signals",
+		    "-n", "witness", $witnessCommand) | Out-Null
+		Wait-FileContains $witness ""
+		$witnessPid = (Get-Content -LiteralPath $witness -Raw).Trim()
 		$script:signalPhase = 'timeout Ctrl-C'
 
 		Invoke-SignalTmux $serverName @(
@@ -308,9 +328,18 @@ try {
 		    "send-keys", "-t", "signals:0.0", $rawCommand,
 		    "Enter") | Out-Null
 		Wait-FileContains $rawReady "ready"
-		Invoke-SignalTmux $serverName @(
-		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
-		Wait-FileContains $rawOutput "ETX"
+		for ($signal = 0; $signal -lt 20; $signal++) {
+			Invoke-SignalTmux $serverName @(
+			    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
+		}
+		Invoke-SignalTmux $serverName @("send-keys", "-t", "signals:0.0", "x") | Out-Null
+		Wait-FileContains $rawOutput "ETX_EXACTLY_20"
+		if ((Get-Content -LiteralPath $witness -Raw).Trim() -ne $witnessPid) {
+			throw "cross-pane witness PID changed"
+		}
+		if (((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $heartbeat).LastWriteTimeUtc).TotalSeconds -gt 3) {
+			throw "cross-pane witness stopped responding"
+		}
 
 		Invoke-SignalTmux $serverName @(
 		    "kill-session", "-t", "signals") | Out-Null

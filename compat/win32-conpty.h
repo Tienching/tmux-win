@@ -32,6 +32,7 @@ struct win32_conpty {
 };
 
 int	win32_conpty_available(void);
+int	win32_conpty_child_main(void);
 int	win32_conpty_spawn(struct win32_conpty *, const wchar_t *,
 	    const wchar_t *, const wchar_t *, unsigned short, unsigned short);
 int	win32_conpty_resize(struct win32_conpty *, unsigned short,
