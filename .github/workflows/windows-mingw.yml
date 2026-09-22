@@ -71,6 +71,8 @@ jobs:
           .\windows\smoke-pipe-output-test.ps1 -Tmux .\tmux.exe
           node .\windows\pane-metadata-regression.cjs .\tmux.exe 60
           if ($LASTEXITCODE -ne 0) { throw 'Pane metadata regression failed' }
+          node .\windows\pane-lifecycle-regression.mjs .\dist\tmux-win32-portable\tmux.exe 40
+          if ($LASTEXITCODE -ne 0) { throw 'Pane lifecycle regression failed' }
 
       - name: Verify Windows release artifacts
         shell: powershell
