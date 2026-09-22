@@ -14,6 +14,8 @@ if ([string]::IsNullOrWhiteSpace($Tmux)) {
 	$Tmux = Join-Path (Get-Location) $Tmux
 }
 $Tmux = (Resolve-Path -LiteralPath $Tmux).Path
+$timeoutExe = Join-Path ([Environment]::SystemDirectory) 'timeout.exe'
+$timeoutCommand = '"' + $timeoutExe + '" /t 30 /nobreak'
 
 $ServerName = "codex-smoke-" + [Guid]::NewGuid().ToString("N")
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) $ServerName
@@ -1082,7 +1084,7 @@ try {
 	Wait-PaneCurrentCommand "killtree window" "smoke:killtree.0" `
 	    "cmd.exe" 7000 | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:killtree.0",
-	    "timeout /t 30 /nobreak", "Enter") | Out-Null
+	    $timeoutCommand, "Enter") | Out-Null
 	Wait-PaneCurrentCommand "kill-pane active child command" `
 	    "smoke:killtree.0" "timeout.exe" | Out-Null
 	$killTreePid = [int](Invoke-SmokeTmux @("display-message", "-p",
@@ -1143,7 +1145,7 @@ try {
 	Write-Pass "resize-pane"
 
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
-	    "timeout /t 30 /nobreak", "Enter") | Out-Null
+	    $timeoutCommand, "Enter") | Out-Null
 	Wait-PaneCurrentCommand "pane current command active child" `
 	    "smoke:0.0" "timeout.exe" | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0", "C-c") | Out-Null
@@ -2565,7 +2567,7 @@ Set-Content -LiteralPath '$helperExit' -Value `$LASTEXITCODE
 	    $realConsoleCtrlCStarted, "-InputFile", $realConsoleCtrlCInput,
 	    "-ExitFile", $realConsoleCtrlCExit, "-SizeFile",
 	    $realConsoleCtrlCSize, "-CtrlCCommand",
-	    "timeout /t 30 /nobreak", "-CtrlCFile",
+	    $timeoutCommand, "-CtrlCFile",
 	    $realConsoleCtrlCFile, "-CtrlCMarker", $realConsoleCtrlCMarker)
 	$realConsoleWait.Restart()
 	while ($realConsoleWait.ElapsedMilliseconds -lt 12000 -and
@@ -2706,7 +2708,7 @@ Set-Content -LiteralPath '$helperExit' -Value `$LASTEXITCODE
 	    $realConsoleCtrlBreakInput, "-ExitFile",
 	    $realConsoleCtrlBreakExit, "-SizeFile",
 	    $realConsoleCtrlBreakSize, "-CtrlBreakCommand",
-	    "timeout /t 30 /nobreak", "-CtrlBreakFile",
+	    $timeoutCommand, "-CtrlBreakFile",
 	    $realConsoleCtrlBreakFile, "-CtrlBreakMarker",
 	    $realConsoleCtrlBreakMarker)
 	$realConsoleWait.Restart()

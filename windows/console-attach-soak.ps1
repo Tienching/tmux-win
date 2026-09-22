@@ -23,6 +23,8 @@ if ([string]::IsNullOrWhiteSpace($Tmux)) {
 	$Tmux = Join-Path (Get-Location) $Tmux
 }
 $Tmux = (Resolve-Path -LiteralPath $Tmux).Path
+$timeoutExe = Join-Path ([Environment]::SystemDirectory) 'timeout.exe'
+$timeoutCommand = '"' + $timeoutExe + '" /t 30 /nobreak'
 
 $ServerName = "codex-console-soak-" + [Guid]::NewGuid().ToString("N")
 $SessionName = "consolesoak"
@@ -197,9 +199,9 @@ try {
 	    "-SizeFile", $sizeFile, "-ResizeWidth", "88", "-ResizeHeight",
 	    "26", "-ResizedFile", $resizedFile, "-ResizeMarker",
 	    $resizeMarker, "-CtrlCCommand",
-	    "`"timeout /t 30 /nobreak`"", "-CtrlCFile", $ctrlCFile,
+	    (ConvertTo-WindowsArgument $timeoutCommand), "-CtrlCFile", $ctrlCFile,
 	    "-CtrlCMarker", $ctrlCMarker, "-CtrlBreakCommand",
-	    "`"timeout /t 30 /nobreak`"", "-CtrlBreakFile",
+	    (ConvertTo-WindowsArgument $timeoutCommand), "-CtrlBreakFile",
 	    $ctrlBreakFile, "-CtrlBreakMarker", $ctrlBreakMarker,
 	    "-ResizeSequence", ($sequence -join ","), "-ResizeLogFile",
 	    $resizeLog, "-ResizeMarkerPrefix", $churnPrefix) `
