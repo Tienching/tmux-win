@@ -288,7 +288,7 @@ $summary = [pscustomobject]@{
 	RemoteBranchDetail = $remoteBranchDetail
 	Status = $status
 	Detail = $detail
-	Workflow = $(if ($null -ne $workflow -and $workflow.Count -ne 0) {
+	Workflow = $(if ($null -ne $workflow -and @($workflow).Count -ne 0) {
 	    [pscustomobject]@{
 		Id = $workflow.id
 		Name = $workflow.name
@@ -297,7 +297,7 @@ $summary = [pscustomobject]@{
 		Url = $workflow.html_url
 	    }
 	} else { $null })
-	GreenRun = $(if ($null -ne $greenRun -and $greenRun.Count -ne 0) {
+	GreenRun = $(if ($null -ne $greenRun -and @($greenRun).Count -ne 0) {
 	    [pscustomobject]@{
 		Id = $greenRun.id
 		Name = $greenRun.name
