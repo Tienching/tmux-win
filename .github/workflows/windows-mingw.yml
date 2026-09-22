@@ -51,6 +51,7 @@ jobs:
           $env:PATH = "$mingwBin;$msysBin;$env:PATH"
           .\windows\probe-mingw-path-test.ps1
           .\windows\process-snapshot-test.ps1 -CC (Join-Path $mingwBin 'gcc.exe')
+          .\windows\ipc-startup-regression.ps1 -CC (Join-Path $mingwBin 'gcc.exe')
           .\windows\release-check.ps1 `
             -CC (Join-Path $mingwBin 'gcc.exe') `
             -CXX (Join-Path $mingwBin 'g++.exe') `

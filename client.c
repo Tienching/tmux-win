@@ -169,8 +169,8 @@ static void		 client_win32_stop_signal_proxy(void);
 static void		 client_win32_send_signal_input(char);
 static HANDLE		 client_win32_lock_start_server(const char *);
 static void		 client_win32_unlock_start_server(HANDLE);
-static int		 client_win32_start_server(const char *);
-static int		 client_win32_retry_connect(const char *, uintptr_t *);
+static int		 client_win32_start_server(const char *, HANDLE *);
+static int		 client_win32_retry_connect(const char *, uintptr_t *, HANDLE);
 static int		 client_win32_get_size(u_int *, u_int *);
 static void		 client_win32_send_resize(void);
 static void		 client_win32_resize_timer(evutil_socket_t, short, void *);
@@ -271,17 +271,18 @@ client_win32_remove_endpoint(const char *path)
 }
 
 static int
-client_win32_start_server(const char *path)
+client_win32_start_server(const char *path, HANDLE *process)
 {
 	STARTUPINFOW		 si;
 	PROCESS_INFORMATION	 pi;
 	wchar_t			 module[MAX_PATH], *wpath, *command_line;
 	wchar_t		       **cfg_wide = NULL;
 	const wchar_t	       **argv;
-	DWORD			 flags, module_len;
+	DWORD			 flags, module_len, error;
 	u_int			 i;
 	int			 argc, idx, log_level;
 
+	*process = NULL;
 	module_len = GetModuleFileNameW(NULL, module, nitems(module));
 	if (module_len == 0 || module_len >= nitems(module)) {
 		errno = EIO;
@@ -338,33 +339,48 @@ out:
 	    win32_job_creation_flags_for_child();
 	if (!CreateProcessW(module, command_line, NULL, NULL, FALSE, flags,
 	    NULL, NULL, &si, &pi)) {
+		error = GetLastError();
 		free(command_line);
+		fprintf(stderr, "Windows server creation failed: error %lu\n", error);
+		SetLastError(error);
 		errno = EIO;
 		return (-1);
 	}
 	free(command_line);
 	CloseHandle(pi.hThread);
-	CloseHandle(pi.hProcess);
+	*process = pi.hProcess;
 	return (0);
 }
 
 static int
-client_win32_retry_connect(const char *path, uintptr_t *fd)
+client_win32_retry_connect(const char *path, uintptr_t *fd, HANDLE process)
 {
-	int	i, error;
+	int	i;
+	DWORD	error = ERROR_FILE_NOT_FOUND, exit_code;
 
 	for (i = 0; i < 50; i++) {
+		if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0 &&
+		    GetExitCodeProcess(process, &exit_code)) {
+			fprintf(stderr, "Windows server exited during startup: code %lu\n",
+			    exit_code);
+			SetLastError(ERROR_PROCESS_ABORTED);
+			return (-1);
+		}
 		if (win32_ipc_connect(path, fd) == 0) {
 			win32_socket_set_blocking(*fd, 0);
 			return (0);
 		}
-		error = WSAGetLastError();
+		error = GetLastError();
 		if (error != WSAECONNREFUSED &&
-		    GetLastError() != ERROR_FILE_NOT_FOUND &&
-		    GetLastError() != ERROR_PATH_NOT_FOUND)
+		    error != ERROR_FILE_NOT_FOUND &&
+		    error != ERROR_PATH_NOT_FOUND &&
+		    error != ERROR_SHARING_VIOLATION &&
+		    error != ERROR_LOCK_VIOLATION)
 			break;
 		Sleep(100);
 	}
+	fprintf(stderr, "Windows server IPC startup failed: error %lu\n", error);
+	SetLastError(error);
 	return (-1);
 }
 #endif
@@ -374,17 +390,19 @@ static imsg_fd_t
 client_connect(struct event_base *base, const char *path, uint64_t flags)
 {
 #ifdef _WIN32
-	HANDLE		mutex = NULL;
+	HANDLE		mutex = NULL, process = NULL;
 	uintptr_t	fd;
 	int		error, owner_alive;
+	DWORD		windows_error;
 
 	(void)base;
 	log_debug("socket endpoint is %s", path);
 
 	if (win32_ipc_connect(path, &fd) != 0) {
 		error = WSAGetLastError();
+		windows_error = GetLastError();
 		log_debug("connect failed: Windows error %lu, Winsock error %d",
-		    GetLastError(), error);
+		    windows_error, error);
 		if ((flags & CLIENT_NOFORK) &&
 		    (flags & CLIENT_STARTSERVER) &&
 		    (~flags & CLIENT_NOSTARTSERVER))
@@ -392,8 +410,8 @@ client_connect(struct event_base *base, const char *path, uint64_t flags)
 			    base, -1, NULL));
 		if (error == WSAECONNREFUSED)
 			errno = ECONNREFUSED;
-		else if (GetLastError() == ERROR_FILE_NOT_FOUND ||
-		    GetLastError() == ERROR_PATH_NOT_FOUND)
+		else if (windows_error == ERROR_FILE_NOT_FOUND ||
+		    windows_error == ERROR_PATH_NOT_FOUND)
 			errno = ENOENT;
 		else
 			errno = EIO;
@@ -414,11 +432,14 @@ client_connect(struct event_base *base, const char *path, uint64_t flags)
 				return ((imsg_fd_t)-1);
 			}
 			client_win32_remove_endpoint(path);
-			if (client_win32_start_server(path) == 0 &&
-			    client_win32_retry_connect(path, &fd) == 0) {
+			if (client_win32_start_server(path, &process) == 0 &&
+			    client_win32_retry_connect(path, &fd, process) == 0) {
+				CloseHandle(process);
 				client_win32_unlock_start_server(mutex);
 				return (fd);
 			}
+			if (process != NULL)
+				CloseHandle(process);
 			client_win32_unlock_start_server(mutex);
 			errno = EIO;
 		}

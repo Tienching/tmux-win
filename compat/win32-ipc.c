@@ -321,13 +321,14 @@ win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
 {
 	HANDLE		file, process;
 	LARGE_INTEGER	size;
-	DWORD		exit_code, read;
+	DWORD		exit_code, read, error;
 	char		*buffer, *end, *pid_end;
 	unsigned long	value, pid;
 	size_t		magic_len = strlen(WIN32_IPC_MAGIC);
 	int		retval = -1;
 
-	file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE,
+	file = CreateFileW(path, GENERIC_READ,
+	    FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
 	    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file == INVALID_HANDLE_VALUE)
 		return (-1);
@@ -344,8 +345,10 @@ win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
 		return (-1);
 	}
 	if (!ReadFile(file, buffer, (DWORD)size.QuadPart, &read, NULL)) {
+		error = GetLastError();
 		free(buffer);
 		CloseHandle(file);
+		SetLastError(error);
 		return (-1);
 	}
 	CloseHandle(file);
@@ -375,15 +378,24 @@ win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
 	process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
 	    (DWORD)pid);
 	if (process == NULL) {
-		SetLastError(ERROR_NOT_FOUND);
+		error = GetLastError();
 		free(buffer);
+		/* A denied query is not evidence that the endpoint is stale. */
+		SetLastError(error == ERROR_INVALID_PARAMETER ?
+		    ERROR_NOT_FOUND : error);
 		return (-1);
 	}
-	if (!GetExitCodeProcess(process, &exit_code) ||
-	    exit_code != STILL_ACTIVE) {
+	if (!GetExitCodeProcess(process, &exit_code)) {
+		error = GetLastError();
 		CloseHandle(process);
-		SetLastError(ERROR_NOT_FOUND);
 		free(buffer);
+		SetLastError(error);
+		return (-1);
+	}
+	if (exit_code != STILL_ACTIVE) {
+		CloseHandle(process);
+		free(buffer);
+		SetLastError(ERROR_NOT_FOUND);
 		return (-1);
 	}
 	CloseHandle(process);
@@ -395,7 +407,9 @@ win32_ipc_read_endpoint(const wchar_t *path, unsigned short *port,
 bad_format:
 	SetLastError(ERROR_BAD_FORMAT);
 out:
+	error = GetLastError();
 	free(buffer);
+	SetLastError(error);
 	return (retval);
 }
 
@@ -736,6 +750,8 @@ win32_ipc_connect(const char *path, uintptr_t *socket_out)
 	unsigned char		token[WIN32_IPC_TOKEN_SIZE];
 	unsigned short		port;
 	u_long			mode;
+	DWORD			error;
+	const char		*stage = "endpoint read";
 
 	if (path == NULL || socket_out == NULL) {
 		SetLastError(ERROR_INVALID_PARAMETER);
@@ -751,31 +767,42 @@ win32_ipc_connect(const char *path, uintptr_t *socket_out)
 	if (win32_ipc_read_endpoint(wpath, &port, token) != 0)
 		goto fail;
 
+	stage = "socket creation";
 	sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (sock == INVALID_SOCKET)
-		goto fail;
+		goto socket_fail;
 
 	memset(&addr, 0, sizeof addr);
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	addr.sin_port = htons(port);
+	stage = "TCP connect";
 	if (connect(sock, (struct sockaddr *)&addr, sizeof addr) ==
 	    SOCKET_ERROR)
-		goto fail;
+		goto socket_fail;
+	stage = "token send";
 	if (win32_ipc_send_all(sock, token, sizeof token) != 0)
-		goto fail;
+		goto socket_fail;
 	mode = 1;
+	stage = "nonblocking setup";
 	if (ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR)
-		goto fail;
+		goto socket_fail;
 
 	free(wpath);
 	*socket_out = (uintptr_t)sock;
 	return (0);
 
+socket_fail:
+	error = WSAGetLastError();
+	goto cleanup;
 fail:
+	error = GetLastError();
+cleanup:
 	if (sock != INVALID_SOCKET)
 		closesocket(sock);
 	free(wpath);
+	log_debug("Windows IPC %s failed: error %lu", stage, error);
+	SetLastError(error);
 	return (-1);
 }
 
