@@ -96,7 +96,12 @@ function Wait-CurrentCommand([string]$ServerName, [string]$Target,
 		}
 		Start-Sleep -Milliseconds 200
 	}
-	throw "pane $Target did not reach command ${Expected}: $current"
+	$capture = "unavailable"
+	try {
+		$capture = Invoke-SignalTmux $ServerName @(
+		    "capture-pane", "-p", "-t", $Target) 5
+	} catch { $capture = $_.Exception.Message }
+	throw "pane $Target did not reach command ${Expected}: $current; phase=$script:signalPhase`n$capture"
 }
 
 function Wait-FileContains([string]$Path, [string]$Needle,
@@ -174,8 +179,12 @@ using System;
 using System.Runtime.InteropServices;
 public static class TmuxSignalMatrixCtrlHandler {
 	public delegate bool ConsoleCtrlDelegate(uint type);
+	public static int Events;
 	public static ConsoleCtrlDelegate Handler = new ConsoleCtrlDelegate(Ignore);
-	public static bool Ignore(uint type) { return true; }
+	public static bool Ignore(uint type) {
+		System.Threading.Interlocked.Increment(ref Events);
+		return true;
+	}
 	[DllImport("kernel32.dll")]
 	public static extern bool SetConsoleCtrlHandler(
 	    ConsoleCtrlDelegate handler, bool add);
@@ -186,13 +195,19 @@ Add-Type -TypeDefinition $source
     [TmuxSignalMatrixCtrlHandler]::Handler, $true)
 [Console]::TreatControlCAsInput = $true
 Set-Content -LiteralPath $Ready -Encoding ascii -Value "ready"
+$etxCount = 0
 $deadline = [DateTime]::UtcNow.AddSeconds(20)
 while ([DateTime]::UtcNow -lt $deadline) {
 	if ([Console]::KeyAvailable) {
 		$key = [Console]::ReadKey($true)
 		if ([int][char]$key.KeyChar -eq 3) {
+			$etxCount++
+		} elseif ($key.KeyChar -eq 'x') {
+			if ($etxCount -ne 20) { exit 3 }
+			Start-Sleep -Milliseconds 200
+			if ([TmuxSignalMatrixCtrlHandler]::Events -ne 0) { exit 4 }
 			Set-Content -LiteralPath $Output -Encoding ascii `
-			    -Value "ETX"
+			    -Value "ETX_EXACTLY_20"
 			exit 0
 		}
 	}
@@ -209,6 +224,8 @@ if ($Iterations -lt 1) {
 $serverName = "signal-matrix-" + [Guid]::NewGuid().ToString("N")
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) $serverName
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
+$timeoutExe = Join-Path ([Environment]::SystemDirectory) 'timeout.exe'
+$timeoutCommand = '"' + $timeoutExe + '" /t 30 /nobreak'
 
 try {
 	for ($i = 1; $i -le $Iterations; $i++) {
@@ -217,32 +234,53 @@ try {
 		    "new-session", "-d", "-s", "signals", "cmd.exe") |
 		    Out-Null
 		Start-Sleep -Milliseconds 700
+		$witness = Join-Path $temp "witness-$i.txt"
+		$witnessLiteral = $witness.Replace("'", "''")
+		$heartbeat = Join-Path $temp "heartbeat-$i.txt"
+		$heartbeatLiteral = $heartbeat.Replace("'", "''")
+		$witnessCommand = 'powershell -NoProfile -Command "' +
+		    "[IO.File]::WriteAllText('$witnessLiteral',[string]`$PID); while (`$true) { [IO.File]::WriteAllText('$heartbeatLiteral','beat'); Start-Sleep -Milliseconds 100 }" + '"'
+		Invoke-SignalTmux $serverName @("new-window", "-d", "-t", "signals",
+		    "-n", "witness", $witnessCommand) | Out-Null
+		Wait-FileContains $witness ""
+		$witnessPid = (Get-Content -LiteralPath $witness -Raw).Trim()
+		$script:signalPhase = 'timeout Ctrl-C'
 
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
-		    "timeout /t 30 /nobreak", "Enter") | Out-Null
+		    $timeoutCommand, "Enter") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "timeout.exe"
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		# A process name alone does not mean PowerShell has installed its
+		# control handler. Signal only after its command actually starts.
+		$sleepReady = Join-Path $temp "ctrl-c-ready-$i.txt"
+		$script:signalPhase = 'PowerShell Ctrl-C'
+		$readyLiteral = $sleepReady.Replace("'", "''")
+		$sleepCommand = 'powershell -NoProfile -Command "' +
+		    "[IO.File]::WriteAllText('$readyLiteral','ready'); Start-Sleep -Seconds 30" + '"'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
-		    'powershell -NoProfile -Command "Start-Sleep -Seconds 30"',
+		    $sleepCommand,
 		    "Enter") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "powershell.exe"
+		Wait-FileContains $sleepReady "ready"
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'timeout Ctrl-Break'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
-		    "timeout /t 30 /nobreak", "Enter") | Out-Null
+		    $timeoutCommand, "Enter") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "timeout.exe"
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'explicit Ctrl-Break probe'
 		$breakScript = Join-Path $temp "ctrl-break-$i.ps1"
 		$breakReady = Join-Path $temp "ctrl-break-ready-$i.txt"
 		$breakOutput = Join-Path $temp "ctrl-break-output-$i.txt"
@@ -260,6 +298,7 @@ try {
 		Wait-FileContains $breakOutput "CTRL_BREAK"
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'choice Ctrl-C'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
 		    "choice /c yn /t 30 /d y", "Enter") | Out-Null
@@ -268,6 +307,7 @@ try {
 		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'choice Ctrl-Break'
 		Invoke-SignalTmux $serverName @(
 		    "send-keys", "-t", "signals:0.0",
 		    "choice /c yn /t 30 /d y", "Enter") | Out-Null
@@ -276,6 +316,7 @@ try {
 		    "send-keys", "-t", "signals:0.0", "C-Break") | Out-Null
 		Wait-CurrentCommand $serverName "signals:0.0" "cmd.exe"
 
+		$script:signalPhase = 'raw ETX probe'
 		$rawScript = Join-Path $temp "raw-etx-$i.ps1"
 		$rawReady = Join-Path $temp "raw-etx-ready-$i.txt"
 		$rawOutput = Join-Path $temp "raw-etx-output-$i.txt"
@@ -287,9 +328,18 @@ try {
 		    "send-keys", "-t", "signals:0.0", $rawCommand,
 		    "Enter") | Out-Null
 		Wait-FileContains $rawReady "ready"
-		Invoke-SignalTmux $serverName @(
-		    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
-		Wait-FileContains $rawOutput "ETX"
+		for ($signal = 0; $signal -lt 20; $signal++) {
+			Invoke-SignalTmux $serverName @(
+			    "send-keys", "-t", "signals:0.0", "C-c") | Out-Null
+		}
+		Invoke-SignalTmux $serverName @("send-keys", "-t", "signals:0.0", "x") | Out-Null
+		Wait-FileContains $rawOutput "ETX_EXACTLY_20"
+		if ((Get-Content -LiteralPath $witness -Raw).Trim() -ne $witnessPid) {
+			throw "cross-pane witness PID changed"
+		}
+		if (((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $heartbeat).LastWriteTimeUtc).TotalSeconds -gt 3) {
+			throw "cross-pane witness stopped responding"
+		}
 
 		Invoke-SignalTmux $serverName @(
 		    "kill-session", "-t", "signals") | Out-Null

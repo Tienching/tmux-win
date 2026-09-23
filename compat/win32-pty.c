@@ -70,67 +70,64 @@ win32_pty_ignore_control(DWORD type)
 	return (TRUE);
 }
 
-/*
- * Global SRW lock to serialize Ctrl-Break console attach/detach
- * operations.  FreeConsole/AttachConsole/SetConsoleCtrlHandler are
- * process-wide state changes; concurrent calls from multiple threads
- * (e.g. multiple panes sending Ctrl-C simultaneously) would corrupt
- * the console attachment state.
- */
-static SRWLOCK win32_ctrl_break_lock = SRWLOCK_INIT;
-
-/*
- * Internal: send Ctrl-Break to a PID while holding the SRW lock.
- * Caller must NOT hold win32_ctrl_break_lock.
- */
-static int
-win32_pty_send_ctrl_break_to_pid_locked(DWORD pid)
+/* Runs only in a disposable helper, never in the shared tmux server. */
+int
+win32_pty_ctrl_break_child(unsigned long pid)
 {
-	BOOL	attached, generated, had_console, handler_installed;
+	BOOL generated;
+	DWORD members[1024], count, i;
 
 	if (pid == 0)
-		return (-1);
-
-	had_console = (GetConsoleWindow() != NULL);
-	handler_installed = SetConsoleCtrlHandler(win32_pty_ignore_control,
-	    TRUE);
+		return (1);
 	FreeConsole();
-	attached = AttachConsole(pid);
-	if (!attached) {
-		/* Restore console state on failure. */
-		if (had_console)
-			AttachConsole(ATTACH_PARENT_PROCESS);
-		if (handler_installed)
-			SetConsoleCtrlHandler(win32_pty_ignore_control, FALSE);
-		return (-1);
-	}
-
+	if (!AttachConsole(pid)) return (1);
+	/* Attach resets handlers: install protection only after attachment. */
+	if (!SetConsoleCtrlHandler(win32_pty_ignore_control, TRUE)) return (1);
+	count = GetConsoleProcessList(members, 1024);
+	if (!count || count > 1024) return (1);
+	for (i = 0; i < count && members[i] != pid; i++) {}
+	if (i == count) return (1);
+	/* Never fall back to group zero (console-wide broadcast). */
 	generated = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
 	Sleep(50);
 	FreeConsole();
-	if (had_console)
-		AttachConsole(ATTACH_PARENT_PROCESS);
-	if (handler_installed)
-		SetConsoleCtrlHandler(win32_pty_ignore_control, FALSE);
-	return (generated ? 0 : -1);
+	return (generated ? 0 : 1);
 }
 
-/*
- * Send Ctrl-Break to a process identified only by PID.
- * Does not depend on struct win32_pty, so it can be called from
- * worker threads that only hold a process_id.
- * Serialized with a global SRW lock to prevent concurrent console
- * attach/detach from corrupting process-wide state.
- */
+/* Hold the target process open until helper completion to prevent PID reuse. */
 int
 win32_pty_send_ctrl_break_to_pid(DWORD pid)
 {
-	int	rc;
-
-	AcquireSRWLockExclusive(&win32_ctrl_break_lock);
-	rc = win32_pty_send_ctrl_break_to_pid_locked(pid);
-	ReleaseSRWLockExclusive(&win32_ctrl_break_lock);
-	return (rc);
+	wchar_t executable[32768], command[32832];
+	STARTUPINFOW startup = {0};
+	PROCESS_INFORMATION process = {0};
+	HANDLE target;
+	DWORD length, status = 1;
+	if (!pid) return (-1);
+	target = OpenProcess(SYNCHRONIZE, FALSE, pid);
+	if (target == NULL) return (-1);
+	if (WaitForSingleObject(target, 0) != WAIT_TIMEOUT) {
+		CloseHandle(target);
+		return (-1);
+	}
+	length = GetModuleFileNameW(NULL, executable, 32768);
+	if (!length || length >= 32768) {
+		CloseHandle(target);
+		return (-1);
+	}
+	swprintf(command, 32832, L"\"%ls\" --win32-ctrl-break %lu", executable, pid);
+	startup.cb = sizeof startup;
+	if (CreateProcessW(NULL, command, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+	    NULL, NULL, &startup, &process)) {
+		if (WaitForSingleObject(process.hProcess, 5000) == WAIT_OBJECT_0)
+			GetExitCodeProcess(process.hProcess, &status);
+		else
+			TerminateProcess(process.hProcess, 1);
+		CloseHandle(process.hThread);
+		CloseHandle(process.hProcess);
+	}
+	CloseHandle(target);
+	return (status == 0 ? 0 : -1);
 }
 
 int
@@ -162,9 +159,8 @@ win32_pty_socket_to_conpty(LPVOID data)
 	struct win32_pty_input_args	*args = data;
 	SOCKET				 bridge_socket = args->bridge_socket;
 	HANDLE				 input = args->input;
-	DWORD				 process_id = args->process_id;
 	char				 buffer[WIN32_PTY_BUFFER];
-	int				 i, n, offset;
+	int				 n;
 
 	free(args);
 	args = NULL;
@@ -173,26 +169,11 @@ win32_pty_socket_to_conpty(LPVOID data)
 		n = recv(bridge_socket, buffer, sizeof buffer, 0);
 		if (n <= 0)
 			break;
-		offset = 0;
-		for (i = 0; i < n; i++) {
-			if (buffer[i] != '\003')
-				continue;
-			if (i != offset &&
-			    win32_pty_write_input(input, buffer + offset,
-			    i - offset) != 0)
-				goto out;
-			if (win32_pty_write_input(input, buffer + i, 1) != 0)
-				goto out;
-			win32_pty_send_ctrl_break_to_pid(process_id);
-			offset = i + 1;
-		}
-		if (offset != n &&
-		    win32_pty_write_input(input, buffer + offset,
-		    n - offset) != 0)
+		/* ConPTY owns ETX interpretation; never add a Ctrl-Break to it. */
+		if (win32_pty_write_input(input, buffer, n) != 0)
 			break;
 	}
 
-out:
 	win32_socket_shutdown_read((uintptr_t)bridge_socket);
 	return (0);
 }

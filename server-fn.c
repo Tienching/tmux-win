@@ -330,6 +330,9 @@ server_destroy_pane(struct window_pane *wp, int notify)
 	u_int			 sy = screen_size_y(&wp->base);
 
 #ifdef _WIN32
+	/* The poll timer owns a pane pointer independently of the PTY. */
+	if (event_initialized(&wp->win32_pane_poll_event))
+		event_del(&wp->win32_pane_poll_event);
 	if (wp->win32_pty != NULL) {
 		if (~wp->flags & PANE_EXITED)
 			win32_pty_terminate((struct win32_pty *)wp->win32_pty,

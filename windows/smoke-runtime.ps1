@@ -14,6 +14,8 @@ if ([string]::IsNullOrWhiteSpace($Tmux)) {
 	$Tmux = Join-Path (Get-Location) $Tmux
 }
 $Tmux = (Resolve-Path -LiteralPath $Tmux).Path
+$timeoutExe = Join-Path ([Environment]::SystemDirectory) 'timeout.exe'
+$timeoutCommand = '"' + $timeoutExe + '" /t 30 /nobreak'
 
 $ServerName = "codex-smoke-" + [Guid]::NewGuid().ToString("N")
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) $ServerName
@@ -73,6 +75,10 @@ function Invoke-NamedTmux([string]$Name, [string[]]$Arguments,
 	$psi.UseShellExecute = $false
 
 	$process = [System.Diagnostics.Process]::Start($psi)
+	# Drain both pipes while the child runs: show-environment can exceed the
+	# pipe buffer on CI, so waiting first would deadlock a healthy client.
+	$stdoutTask = $process.StandardOutput.ReadToEndAsync()
+	$stderrTask = $process.StandardError.ReadToEndAsync()
 	if (-not $process.WaitForExit($Timeout * 1000)) {
 		try {
 			$process.Kill()
@@ -81,8 +87,8 @@ function Invoke-NamedTmux([string]$Name, [string[]]$Arguments,
 		throw "tmux timed out: $($Arguments -join ' ')"
 	}
 
-	$stdout = $process.StandardOutput.ReadToEnd()
-	$stderr = $process.StandardError.ReadToEnd()
+	$stdout = $stdoutTask.GetAwaiter().GetResult()
+	$stderr = $stderrTask.GetAwaiter().GetResult()
 	if ($process.ExitCode -ne 0) {
 		throw @"
 tmux failed: $($Arguments -join ' ')
@@ -472,6 +478,31 @@ function Wait-PaneCurrentCommand([string]$Name, [string]$Target,
 	throw "$Name did not contain expected text: $Needle; last: $command"
 }
 
+function Wait-PaneCurrentPath([string]$PaneId, [string]$Expected,
+    [int]$Timeout = 7000) {
+	if ($PaneId -notmatch '^%\d+$') { throw "Invalid created pane ID: $PaneId" }
+	$expectedPath = Resolve-SmokePath $Expected
+	$sw = [Diagnostics.Stopwatch]::StartNew()
+	$last = ""
+	while ($sw.ElapsedMilliseconds -lt $Timeout) {
+		# display-message may fall back to the active pane for a missing target.
+		# Never accept that pane's command/path as evidence for this test.
+		$last = (Invoke-SmokeTmux @("display-message", "-p", "-t", $PaneId,
+		    "#{pane_id}|#{pane_dead}|#{pane_current_command}|#{pane_current_path}")).Out.Trim()
+		$fields = $last -split '\|', 4
+		if ($fields.Count -ne 4 -or $fields[0] -ne $PaneId -or $fields[1] -ne '0') {
+			$panes = (Invoke-SmokeTmux @("list-panes", "-a", "-F",
+			    "#{pane_id}|#{pane_dead}|#{pane_dead_status}|#{window_name}")).Out
+			throw "Created pane disappeared or died: expected=$PaneId; last=$last; panes=$panes"
+		}
+		if ((Test-Path -LiteralPath $fields[3]) -and
+		    (Resolve-SmokePath $fields[3]) -eq $expectedPath) { return $fields[3] }
+		Start-Sleep -Milliseconds 100
+	}
+	$capture = (Invoke-SmokeTmux @("capture-pane", "-p", "-S", "-20", "-t", $PaneId)).Out
+	throw "Pane cwd did not converge: expected=$expectedPath; last=$last; capture=$capture"
+}
+
 function Wait-WindowGone([string]$Name, [string]$Target,
     [int]$Timeout = 10000) {
 	$sw = [Diagnostics.Stopwatch]::StartNew()
@@ -704,10 +735,14 @@ try {
 	$defaultAppData = Join-Path $defaultRoot "AppData"
 	$defaultHome = Join-Path $defaultRoot "Home"
 	$defaultLocalAppData = Join-Path $defaultRoot "LocalAppData"
+	# The endpoint uses SHGetKnownFolderPath, whose registered path expands
+	# USERPROFILE rather than LOCALAPPDATA. The synthetic profile must contain
+	# that directory as well; otherwise the known-folder lookup fails.
+	$defaultKnownLocalAppData = Join-Path $defaultHome "AppData\Local"
 	New-Item -ItemType Directory -Force -Path `
 	    (Join-Path $defaultProgramData "tmux"), `
 	    (Join-Path $defaultAppData "tmux"), `
-	    $defaultHome, $defaultLocalAppData | Out-Null
+	    $defaultHome, $defaultLocalAppData, $defaultKnownLocalAppData | Out-Null
 	Set-Content -LiteralPath `
 	    (Join-Path $defaultProgramData "tmux\tmux.conf") `
 	    -Encoding ascii -Value `
@@ -1074,7 +1109,7 @@ try {
 	Wait-PaneCurrentCommand "killtree window" "smoke:killtree.0" `
 	    "cmd.exe" 7000 | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:killtree.0",
-	    "timeout /t 30 /nobreak", "Enter") | Out-Null
+	    $timeoutCommand, "Enter") | Out-Null
 	Wait-PaneCurrentCommand "kill-pane active child command" `
 	    "smoke:killtree.0" "timeout.exe" | Out-Null
 	$killTreePid = [int](Invoke-SmokeTmux @("display-message", "-p",
@@ -1135,7 +1170,7 @@ try {
 	Write-Pass "resize-pane"
 
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0",
-	    "timeout /t 30 /nobreak", "Enter") | Out-Null
+	    $timeoutCommand, "Enter") | Out-Null
 	Wait-PaneCurrentCommand "pane current command active child" `
 	    "smoke:0.0" "timeout.exe" | Out-Null
 	Invoke-SmokeTmux @("send-keys", "-t", "smoke:0.0", "C-c") | Out-Null
@@ -1381,14 +1416,10 @@ exit 2
 		Write-Host "[SKIP] pane symlink cwd: $($_.Exception.Message)"
 	}
 	if ($paneSymlinkCreated) {
-		Invoke-SmokeTmux @("new-window", "-d", "-t", "smoke",
-		    "-n", "cwdsymlink", "-c", $paneSymlinkCwd, "cmd.exe") |
-		    Out-Null
-		Wait-PaneCurrentCommand "pane cwd symlink" "smoke:cwdsymlink.0" `
-		    "cmd.exe" 7000 | Out-Null
-		$paneSymlinkPath = (Invoke-SmokeTmux @("display-message",
-		    "-p", "-t", "smoke:cwdsymlink.0",
-		    "#{pane_current_path}")).Out.Trim()
+		$paneSymlinkId = (Invoke-SmokeTmux @("new-window", "-d", "-P",
+		    "-F", "#{pane_id}", "-t", "smoke", "-n", "cwdsymlink",
+		    "-c", $paneSymlinkCwd, "cmd.exe")).Out.Trim()
+		$paneSymlinkPath = Wait-PaneCurrentPath $paneSymlinkId $paneSymlinkCwd
 		if (-not (Test-Path -LiteralPath $paneSymlinkPath)) {
 			throw ("new-window -c symlink cwd did not resolve: " +
 			    "$paneSymlinkPath")
@@ -2557,7 +2588,7 @@ Set-Content -LiteralPath '$helperExit' -Value `$LASTEXITCODE
 	    $realConsoleCtrlCStarted, "-InputFile", $realConsoleCtrlCInput,
 	    "-ExitFile", $realConsoleCtrlCExit, "-SizeFile",
 	    $realConsoleCtrlCSize, "-CtrlCCommand",
-	    "timeout /t 30 /nobreak", "-CtrlCFile",
+	    $timeoutCommand, "-CtrlCFile",
 	    $realConsoleCtrlCFile, "-CtrlCMarker", $realConsoleCtrlCMarker)
 	$realConsoleWait.Restart()
 	while ($realConsoleWait.ElapsedMilliseconds -lt 12000 -and
@@ -2698,7 +2729,7 @@ Set-Content -LiteralPath '$helperExit' -Value `$LASTEXITCODE
 	    $realConsoleCtrlBreakInput, "-ExitFile",
 	    $realConsoleCtrlBreakExit, "-SizeFile",
 	    $realConsoleCtrlBreakSize, "-CtrlBreakCommand",
-	    "timeout /t 30 /nobreak", "-CtrlBreakFile",
+	    $timeoutCommand, "-CtrlBreakFile",
 	    $realConsoleCtrlBreakFile, "-CtrlBreakMarker",
 	    $realConsoleCtrlBreakMarker)
 	$realConsoleWait.Restart()

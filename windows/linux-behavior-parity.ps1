@@ -10,6 +10,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$timeoutExe = Join-Path ([Environment]::SystemDirectory) 'timeout.exe'
+$timeoutCommand = '"' + $timeoutExe + '" /t 30 /nobreak'
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($WindowsTmux)) {
@@ -664,7 +666,7 @@ function Run-PlatformCases([string]$Platform,
 		    "set-environment", "-g", "PARITY_CHILD_ENV", "OK") |
 		    Out-Null
 		$environmentCommand = if ($Platform -eq "windows") {
-			"cmd.exe /d /c set PARITY_CHILD_ENV & timeout /t 30 /nobreak >NUL"
+			"cmd.exe /d /c set PARITY_CHILD_ENV & $timeoutCommand >NUL"
 		} else {
 			"sh -lc 'env | grep ^PARITY_CHILD_ENV=; sleep 30'"
 		}
@@ -681,7 +683,7 @@ function Run-PlatformCases([string]$Platform,
 		$cwdDirectory = New-PlatformTempDirectory $Platform `
 		    ("tmux cwd " + [Guid]::NewGuid().ToString("N").Substring(0, 8))
 		$cwdCommand = if ($Platform -eq "windows") {
-			"cmd.exe /d /c cd & timeout /t 30 /nobreak >NUL"
+			"cmd.exe /d /c cd & $timeoutCommand >NUL"
 		} else {
 			"sh -lc 'pwd; sleep 30'"
 		}
@@ -1377,7 +1379,7 @@ function Run-PlatformCases([string]$Platform,
 		    $rectangleBuffer.Trim()
 
 		$ioCommand = if ($Platform -eq "windows") {
-			"cmd.exe /d /c echo PARITY_PANE_IO_OK & timeout /t 30 /nobreak >NUL"
+			"cmd.exe /d /c echo PARITY_PANE_IO_OK & $timeoutCommand >NUL"
 		} else {
 			"sh -lc 'echo PARITY_PANE_IO_OK; sleep 30'"
 		}

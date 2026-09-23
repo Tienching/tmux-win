@@ -326,7 +326,8 @@ win32_process_spawn(struct win32_process *process,
 	    win32_process_socket_to_stdin, input_args, 0, NULL);
 	if (process->input_thread == NULL)
 		goto fail;
-	/* Ownership of input_args transferred to input thread. */
+	/* The worker owns the pipe too, not just its argument allocation. */
+	process->input = NULL;
 	input_args = NULL;
 
 	if (process->output != NULL) {
@@ -351,7 +352,8 @@ win32_process_spawn(struct win32_process *process,
 			output_args = NULL;
 			goto fail;
 		}
-		/* Ownership of output_args transferred to output thread. */
+		/* Do not retain a second owner of the worker's pipe handle. */
+		process->output = NULL;
 		output_args = NULL;
 	}
 

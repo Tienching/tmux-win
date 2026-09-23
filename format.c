@@ -5799,12 +5799,20 @@ char *
 format_expand_time(struct format_tree *ft, const char *fmt)
 {
 	struct format_expand_state	es;
+	char				*result;
 
+#ifdef _WIN32
+	osdep_format_begin();
+#endif
 	memset(&es, 0, sizeof es);
 	es.ft = ft;
 	es.flags = FORMAT_EXPAND_TIME;
 	es.start_time = get_timer();
-	return (format_expand1(&es, fmt));
+	result = format_expand1(&es, fmt);
+#ifdef _WIN32
+	osdep_format_end();
+#endif
+	return (result);
 }
 
 /* Expand keys in a template. */
@@ -5812,12 +5820,20 @@ char *
 format_expand(struct format_tree *ft, const char *fmt)
 {
 	struct format_expand_state	es;
+	char				*result;
 
+#ifdef _WIN32
+	osdep_format_begin();
+#endif
 	memset(&es, 0, sizeof es);
 	es.ft = ft;
 	es.flags = 0;
 	es.start_time = get_timer();
-	return (format_expand1(&es, fmt));
+	result = format_expand1(&es, fmt);
+#ifdef _WIN32
+	osdep_format_end();
+#endif
+	return (result);
 }
 
 /* Expand a single string. */

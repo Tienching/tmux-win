@@ -50,6 +50,8 @@
 
 #ifdef _WIN32
 #include "compat/win32-command.h"
+#include "compat/win32-conpty.h"
+#include "compat/win32-pty.h"
 #include "compat/win32-endpoint.h"
 #include "compat/win32-environment.h"
 #include "compat/win32-socketpair.h"
@@ -658,6 +660,14 @@ main(int argc, char **argv)
 	u_int					 i;
 
 #ifdef _WIN32
+	if (argc > 1 && strcmp(argv[1], "--win32-conpty-child") == 0)
+		return (win32_conpty_child_main());
+	if (argc == 3 && strcmp(argv[1], "--win32-ctrl-break") == 0) {
+		char *end;
+		unsigned long target = strtoul(argv[2], &end, 10);
+		if (!*argv[2] || *end || target == 0) return (1);
+		return (win32_pty_ctrl_break_child(target));
+	}
 	if (setlocale(LC_CTYPE, "") == NULL)
 		errx(1, "invalid LC_ALL, LC_CTYPE or LANG");
 #else

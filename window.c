@@ -1118,9 +1118,10 @@ window_pane_destroy(struct window_pane *wp)
 		close(wp->fd);
 	}
 #ifdef _WIN32
+	/* server_destroy_pane may already have cleared win32_pty. */
+	if (event_initialized(&wp->win32_pane_poll_event))
+		event_del(&wp->win32_pane_poll_event);
 	if (wp->win32_pty != NULL) {
-		if (event_initialized(&wp->win32_pane_poll_event))
-			event_del(&wp->win32_pane_poll_event);
 		if (~wp->flags & PANE_EXITED)
 			win32_pty_terminate((struct win32_pty *)wp->win32_pty,
 			    1);

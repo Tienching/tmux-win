@@ -3766,6 +3766,8 @@ char		*osdep_get_name(int, char *);
 char		*osdep_get_cwd(int);
 #ifdef _WIN32
 char		*osdep_get_cwd_from_tty(const char *);
+void		 osdep_format_begin(void);
+void		 osdep_format_end(void);
 #endif
 struct event_base *osdep_event_init(void);
 

@@ -109,8 +109,8 @@ function Assert-EndpointAcl([string]$Path) {
 
 function Assert-EndpointContent([string]$Path) {
 	$lines = @(Get-Content -LiteralPath $Path)
-	if ($lines.Count -ne 3) {
-		throw "endpoint should contain exactly 3 lines"
+	if ($lines.Count -ne 4) {
+		throw "endpoint should contain exactly 4 lines"
 	}
 	if ($lines[0] -ne "tmux-win32-ipc-v1") {
 		throw "endpoint magic mismatch: $($lines[0])"
@@ -118,7 +118,11 @@ function Assert-EndpointContent([string]$Path) {
 	if ($lines[1] -notmatch '^[0-9]+$') {
 		throw "endpoint port is not numeric: $($lines[1])"
 	}
-	if ($lines[2] -notmatch '^[0-9a-f]{64}$') {
+	if ($lines[2] -notmatch '^[1-9][0-9]*$' -or
+	    $null -eq (Get-Process -Id ([int]$lines[2]) -ErrorAction SilentlyContinue)) {
+		throw "endpoint server PID is missing or not alive"
+	}
+	if ($lines[3] -notmatch '^[0-9a-f]{64}$') {
 		throw "endpoint token is not a 32-byte lowercase hex token"
 	}
 }
@@ -156,7 +160,9 @@ if ($Iterations -lt 1) {
 	throw "-Iterations must be at least 1"
 }
 
-$endpointRoot = Join-Path $env:LOCALAPPDATA "tmux"
+$endpointRoot = Join-Path (Join-Path `
+    ([Environment]::GetFolderPath('LocalApplicationData')) 'tmux') `
+    ([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
 for ($i = 1; $i -le $Iterations; $i++) {
 	$serverName = "ipc-acl-" + [Guid]::NewGuid().ToString("N")
 	$endpoint = Join-Path $endpointRoot ($serverName + ".endpoint")
