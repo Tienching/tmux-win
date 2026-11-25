@@ -59,11 +59,9 @@ struct win32_conpty_api {
 static INIT_ONCE		 conpty_once = INIT_ONCE_STATIC_INIT;
 static struct win32_conpty_api conpty_api;
 
-static BOOL CALLBACK
-win32_conpty_init_once(__unused PINIT_ONCE once, __unused PVOID parameter,
-    __unused PVOID *context)
+static int
+win32_conpty_load_api(HMODULE module, int bundled)
 {
-	HMODULE	kernel32;
 	union {
 		FARPROC				proc;
 		win32_create_pseudoconsole_fn	create;
@@ -77,20 +75,62 @@ win32_conpty_init_once(__unused PINIT_ONCE once, __unused PVOID parameter,
 		win32_close_pseudoconsole_fn	close;
 	} close;
 
-	kernel32 = GetModuleHandleW(L"kernel32.dll");
-	if (kernel32 == NULL)
-		return (FALSE);
-
-	create.proc = GetProcAddress(kernel32, "CreatePseudoConsole");
-	resize.proc = GetProcAddress(kernel32, "ResizePseudoConsole");
-	close.proc = GetProcAddress(kernel32, "ClosePseudoConsole");
+	create.proc = GetProcAddress(module, bundled ? "ConptyCreatePseudoConsole" :
+	    "CreatePseudoConsole");
+	resize.proc = GetProcAddress(module, bundled ? "ConptyResizePseudoConsole" :
+	    "ResizePseudoConsole");
+	close.proc = GetProcAddress(module, bundled ? "ConptyClosePseudoConsole" :
+	    "ClosePseudoConsole");
+	if (create.proc == NULL || resize.proc == NULL || close.proc == NULL)
+		return (-1);
 	conpty_api.create = create.create;
 	conpty_api.resize = resize.resize;
 	conpty_api.close = close.close;
-	if (conpty_api.create == NULL || conpty_api.resize == NULL ||
-	    conpty_api.close == NULL)
-		return (FALSE);
-	return (TRUE);
+	return (0);
+}
+
+static HMODULE
+win32_conpty_load_bundled(void)
+{
+	static const wchar_t host[] = L"conpty\\OpenConsole.exe";
+	static const wchar_t library[] = L"conpty\\conpty.dll";
+	wchar_t	 path[32768], *filename;
+	DWORD	 length, attributes;
+
+	length = GetModuleFileNameW(NULL, path, _countof(path));
+	if (length == 0 || length >= _countof(path))
+		return (NULL);
+	filename = wcsrchr(path, L'\\');
+	if (filename == NULL)
+		return (NULL);
+	filename++;
+	if (_countof(host) > _countof(path) - (size_t)(filename - path))
+		return (NULL);
+	memcpy(filename, host, sizeof host);
+	attributes = GetFileAttributesW(path);
+	if (attributes == INVALID_FILE_ATTRIBUTES ||
+	    (attributes & FILE_ATTRIBUTE_DIRECTORY))
+		return (NULL);
+	memcpy(filename, library, sizeof library);
+	return (LoadLibraryExW(path, NULL,
+	    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32));
+}
+
+static BOOL CALLBACK
+win32_conpty_init_once(__unused PINIT_ONCE once, __unused PVOID parameter,
+    __unused PVOID *context)
+{
+	HMODULE module;
+
+	/* A bundled DLL and its host form one backend for all HPCON handles. */
+	module = win32_conpty_load_bundled();
+	if (module != NULL) {
+		if (win32_conpty_load_api(module, 1) == 0)
+			return (TRUE);
+		FreeLibrary(module);
+	}
+	module = GetModuleHandleW(L"kernel32.dll");
+	return (module != NULL && win32_conpty_load_api(module, 0) == 0);
 }
 
 static int
