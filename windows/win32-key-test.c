@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "tmux.h"
 #include "compat/win32-key.h"
@@ -28,6 +29,23 @@ int
 main(void)
 {
 	char buf[WIN32_KEY_SEQUENCE_MAX];
+	const char *native_enter = "\033[13;28;13;1;260;3_";
+	KEY_EVENT_RECORD record;
+	size_t used;
+
+	for (size_t i = 2; i < strlen(native_enter); ++i)
+		assert(win32_key_decode(native_enter, i, &record, &used) == 1);
+	assert(win32_key_decode(native_enter, strlen(native_enter), &record,
+	    &used) == 0);
+	assert(used == strlen(native_enter));
+	assert(record.wVirtualKeyCode == VK_RETURN && record.wVirtualScanCode == 28);
+	assert(record.uChar.UnicodeChar == '\r' && record.bKeyDown);
+	assert(record.dwControlKeyState == (RIGHT_CTRL_PRESSED | ENHANCED_KEY));
+	assert(record.wRepeatCount == 3);
+	assert(win32_key_code(&record) == (KEYC_KP_ENTER | KEYC_CTRL | KEYC_KEYPAD));
+	assert(win32_key_decode("\033[13;5u", 7, &record, &used) == -1);
+	assert(win32_key_decode("\033[70000;1;0;1;0;1_", 18, &record,
+	    &used) == -1);
 
 	for (key_code letter = 'a'; letter <= 'z'; ++letter)
 		expect_key(letter | KEYC_CTRL, (unsigned int)letter - 'a' + 'A',

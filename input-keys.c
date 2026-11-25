@@ -400,7 +400,8 @@ input_key_build(void)
 
 /* Translate a key code into an output key sequence for a pane. */
 int
-input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
+input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m,
+    __unused const struct key_event *event)
 {
 #ifdef _WIN32
 	char	sequence[WIN32_KEY_SEQUENCE_MAX];
@@ -421,7 +422,11 @@ input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
 #ifdef _WIN32
 	/* Preserve the encoding explicitly requested by a VT application. */
 	if (wp->win32_pty != NULL && !(wp->screen->mode & EXTENDED_KEY_MODES)) {
-		length = win32_key_encode(key, sequence, sizeof sequence);
+		if (event != NULL && event->win32_key.bKeyDown)
+			length = win32_key_encode_record(&event->win32_key, sequence,
+			    sizeof sequence);
+		else
+			length = win32_key_encode(key, sequence, sizeof sequence);
 		if (length != 0) {
 			input_key_write(__func__, wp->event, sequence, length);
 			return (0);

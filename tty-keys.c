@@ -36,6 +36,9 @@
 #include <unistd.h>
 
 #include "tmux.h"
+#ifdef _WIN32
+#include "compat/win32-key.h"
+#endif
 
 /*
  * Handle keys input from the outside terminal. tty_default_*_keys[] are a base
@@ -746,6 +749,9 @@ tty_keys_next(struct tty *tty)
 	key_code		 key, onlykey;
 	struct mouse_event	 m = { 0 };
 	struct key_event	*event;
+#ifdef _WIN32
+	KEY_EVENT_RECORD	 win32_key = { 0 };
+#endif
 
 	/* Get key buffer. */
 	buf = EVBUFFER_DATA(tty->in);
@@ -835,6 +841,17 @@ tty_keys_next(struct tty *tty)
 	case 1:		/* partial */
 		goto partial_key;
 	}
+
+#ifdef _WIN32
+	/* Win32 reports both transitions. Bindings and panes use key presses. */
+	switch (win32_key_decode(buf, len, &win32_key, &size)) {
+	case 0:
+		key = win32_key.bKeyDown ? win32_key_code(&win32_key) : KEYC_UNKNOWN;
+		goto complete_key;
+	case 1:
+		goto partial_key;
+	}
+#endif
 
 	/* Is this an extended key press? */
 	switch (tty_keys_extended_key(tty, buf, len, &size, &key)) {
@@ -1003,6 +1020,9 @@ complete_key:
 	if (key != KEYC_UNKNOWN) {
 		event = xcalloc(1, sizeof *event);
 		event->key = key;
+#ifdef _WIN32
+		event->win32_key = win32_key;
+#endif
 		memcpy(&event->m, &m, sizeof event->m);
 
 		event->buf = xmalloc(size);

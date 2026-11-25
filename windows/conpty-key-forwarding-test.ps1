@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Tmux
+    [string]$Tmux,
+    [switch]$Attach
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,7 +41,23 @@ $cases = [ordered]@{
     'S-a'         = 'A 41 2'
     'M-a'         = 'A 61 1'
 }
-$expected = @($cases.Values) + 'Enter 0A 4'
+$nativeCases = [ordered]@{
+    '13:13:0'  = 'Enter 0D 0'
+    '13:13:8'  = 'Enter 0D 4'
+    '74:10:8'  = 'J 0A 4'
+    '13:13:16' = 'Enter 0D 2'
+    '9:9:8'    = 'Tab 09 4'
+    '39:0:282' = 'RightArrow 00 7'
+    '65:65:16' = 'A 41 2'
+    '90:122:0' = 'Z 7A 0'
+}
+if ($Attach) {
+    $labels = @($nativeCases.Keys)
+    $expected = @($nativeCases.Values)
+} else {
+    $labels = @($cases.Keys) + 'literal LF'
+    $expected = @($cases.Values) + 'Enter 0A 4'
+}
 $reader = @'
 Add-Type -TypeDefinition @"
 using System;
@@ -91,6 +108,8 @@ Start-Sleep -Seconds 15
 '@
 $reader = $reader.Replace('__COUNT__', [string]$expected.Count)
 $command = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($reader))
+$probe = $null
+$probeFiles = @{}
 
 try {
     & $Tmux -L $socket -f NUL new-session -d -s probe "powershell.exe -NoProfile -EncodedCommand $command"
@@ -106,11 +125,29 @@ try {
     }
     if (!$ready) { throw 'The console input probe did not start' }
 
-    $keys = @($cases.Keys)
-    & $Tmux -L $socket send-keys -t $pane @keys
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to send the named keys' }
-    & $Tmux -L $socket send-keys -H -t $pane 0A
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to send literal LF' }
+    if ($Attach) {
+        & $Tmux -L $socket bind-key -n C-F1 set-environment -g NATIVE_KEY_BOUND yes
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to bind the native shortcut' }
+        foreach ($name in 'StartedFile', 'InputFile', 'ExitFile', 'SizeFile') {
+            $probeFiles[$name] = Join-Path ([IO.Path]::GetTempPath()) "$socket-$name.txt"
+        }
+        $probeScript = Join-Path $PSScriptRoot 'console-attach-probe.ps1'
+        $records = @($nativeCases.Keys)
+        $records[-1] = '112:0:8,' + $records[-1]
+        $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$probeScript`"",
+            '-Tmux', "`"$Tmux`"", '-ServerName', $socket, '-Session', 'probe', '-Marker', 'unused',
+            '-KeyRecords', ($records -join ','))
+        foreach ($name in $probeFiles.Keys) {
+            $arguments += "-$name", "`"$($probeFiles[$name])`""
+        }
+        $probe = Start-Process powershell.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    } else {
+        $keys = @($cases.Keys)
+        & $Tmux -L $socket send-keys -t $pane @keys
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to send the named keys' }
+        & $Tmux -L $socket send-keys -H -t $pane 0A
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to send literal LF' }
+    }
 
     $actual = @()
     for ($attempt = 0; $attempt -lt 50; ++$attempt) {
@@ -121,13 +158,25 @@ try {
     }
 
     if (($actual -join "`n") -cne ($expected -join "`n")) {
+        if ($Attach -and (Test-Path -LiteralPath $probeFiles.InputFile)) {
+            Get-Content -LiteralPath $probeFiles.InputFile | Write-Output
+        }
         for ($i = 0; $i -lt [Math]::Max($expected.Count, $actual.Count); ++$i) {
-            $label = (@($keys) + 'literal LF')[$i]
+            $label = $labels[$i]
             Write-Output ('{0,-14} expected {1,-20} received {2}' -f $label, $expected[$i], $actual[$i])
         }
         throw 'The pane received unexpected console key events'
     }
+    if ($Attach -and (& $Tmux -L $socket show-environment -g NATIVE_KEY_BOUND) -ne 'NATIVE_KEY_BOUND=yes') {
+        throw 'tmux did not handle the bound native shortcut'
+    }
     Write-Output "Verified $($expected.Count) key events in the pane"
 } finally {
     & $Tmux -L $socket kill-server
+    if ($null -ne $probe) {
+        if (!$probe.WaitForExit(5000)) { $probe.Kill() }
+        foreach ($path in $probeFiles.Values) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
+        }
+    }
 }

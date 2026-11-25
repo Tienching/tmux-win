@@ -86,7 +86,7 @@ cmd_send_keys_inject_key(struct cmdq_item *item, struct cmdq_item *after,
 
 	wme = TAILQ_FIRST(&wp->modes);
 	if (wme == NULL || wme->mode->key_table == NULL) {
-		if (window_pane_key(wp, tc, s, wl, key, NULL) != 0)
+		if (window_pane_key(wp, tc, s, wl, key, NULL, NULL) != 0)
 			return (NULL);
 		return (item);
 	}
@@ -207,7 +207,7 @@ cmd_send_keys_exec(struct cmd *self, struct cmdq_item *item)
 			cmdq_error(item, "no mouse target");
 			return (CMD_RETURN_ERROR);
 		}
-		window_pane_key(wp, tc, s, wl, m->key, m);
+		window_pane_key(wp, tc, s, wl, m->key, m, NULL);
 		return (CMD_RETURN_NORMAL);
 	}
 
