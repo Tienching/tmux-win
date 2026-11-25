@@ -1,5 +1,7 @@
 #ifdef _WIN32
 
+#include <string.h>
+
 #include "tmux.h"
 #include "win32-key.h"
 
@@ -164,7 +166,7 @@ win32_key_decode(const char *buf, size_t len, KEY_EVENT_RECORD *record,
 		return (1);
 	if (buf[1] != '[')
 		return (-1);
-	for (i = 2; i < len && i < 40; i++) {
+	for (i = 2; i < len && i < WIN32_KEY_RECORD_MAX; i++) {
 		if (buf[i] >= '0' && buf[i] <= '9') {
 			value = value * 10 + buf[i] - '0';
 			if (value > 65535)
@@ -182,7 +184,7 @@ win32_key_decode(const char *buf, size_t len, KEY_EVENT_RECORD *record,
 			return (-1);
 		value = digits = 0;
 	}
-	if (i == 40)
+	if (i == WIN32_KEY_RECORD_MAX)
 		return (-1);
 	if (i == len)
 		return (1);
@@ -196,6 +198,67 @@ win32_key_decode(const char *buf, size_t len, KEY_EVENT_RECORD *record,
 	record->wRepeatCount = fields[5];
 	*used = i + 1;
 	return (0);
+}
+
+/*
+ * Win32 input mode can wrap terminal strings as character-only records.
+ * Unwrap them before tmux parses escape sequences, leaving keyboard records
+ * intact. The caller leaves stream->length bytes before the new input.
+ */
+size_t
+win32_key_unwrap(struct win32_key_stream *stream, char *buf, size_t size)
+{
+	KEY_EVENT_RECORD record;
+	WCHAR chars[2], ch;
+	size_t read = 0, written = 0, used;
+	int result, chars_count, bytes;
+
+	memcpy(buf, stream->pending, stream->length);
+	size += stream->length;
+	stream->length = 0;
+	while (read < size) {
+		result = win32_key_decode(buf + read, size - read, &record,
+		    &used);
+		if (result == 1 && stream->active) {
+			stream->length = size - read;
+			memcpy(stream->pending, buf + read, stream->length);
+			break;
+		}
+		if (result != 0) {
+			buf[written++] = buf[read++];
+			stream->surrogate = 0;
+			continue;
+		}
+		stream->active = 1;
+		if (record.wVirtualKeyCode != 0 || record.wVirtualScanCode != 0 ||
+		    record.dwControlKeyState != 0 || record.wRepeatCount != 1) {
+			memmove(buf + written, buf + read, used);
+			written += used;
+			read += used;
+			stream->surrogate = 0;
+			continue;
+		}
+		read += used;
+		if (!record.bKeyDown)
+			continue;
+		ch = record.uChar.UnicodeChar;
+		if (ch >= 0xd800 && ch <= 0xdbff) {
+			stream->surrogate = ch;
+			continue;
+		}
+		chars_count = 1;
+		chars[0] = ch;
+		if (stream->surrogate != 0 && ch >= 0xdc00 && ch <= 0xdfff) {
+			chars[0] = stream->surrogate;
+			chars[1] = ch;
+			chars_count = 2;
+		}
+		stream->surrogate = 0;
+		bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, chars,
+		    chars_count, buf + written, (int)(read - written), NULL, NULL);
+		written += bytes;
+	}
+	return (written);
 }
 
 key_code

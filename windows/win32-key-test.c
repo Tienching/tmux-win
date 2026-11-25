@@ -34,6 +34,47 @@ expect_key_code(WORD vk, WCHAR ch, DWORD state, key_code expected)
 	assert(win32_key_code(&record) == expected);
 }
 
+static void
+expect_terminal_input(void)
+{
+	const char raw[] = "\033[13;5u";
+	const char native[] = "\033[13;28;13;1;8;1_";
+	const char surrogate_pair[] =
+	    "\033[0;0;55357;1;0;1_\033[0;0;55357;0;0;1_\033[0;0;56832;1;0;1_";
+	char input[256], output[256], chunk[128], wrapped[32];
+	struct win32_key_stream stream = { 0 };
+	size_t position = 0, size, emitted, got = 0;
+	int count;
+
+	memcpy(input, native, sizeof native - 1);
+	position += sizeof native - 1;
+	for (size_t i = 0; i < sizeof raw - 1; ++i) {
+		count = snprintf(wrapped, sizeof wrapped, "\033[0;0;%u;1;0;1_",
+		    (unsigned)raw[i]);
+		memcpy(input + position, wrapped, count);
+		position += count;
+	}
+	for (size_t i = 0; i < position; i += size) {
+		size = i == 0 ? sizeof native + 1 : 1;
+		memcpy(chunk + stream.length, input + i, size);
+		emitted = win32_key_unwrap(&stream, chunk, size);
+		memcpy(output + got, chunk, emitted);
+		got += emitted;
+	}
+	assert(got == sizeof native + sizeof raw - 2);
+	assert(memcmp(output, native, sizeof native - 1) == 0);
+	assert(memcmp(output + sizeof native - 1, raw, sizeof raw - 1) == 0);
+	memcpy(chunk, surrogate_pair, sizeof surrogate_pair - 1);
+	assert(win32_key_unwrap(&stream, chunk, sizeof surrogate_pair - 1) == 4);
+	assert(memcmp(chunk, "\xf0\x9f\x98\x80", 4) == 0);
+	memcpy(chunk, raw, sizeof raw - 1);
+	assert(win32_key_unwrap(&stream, chunk, sizeof raw - 1) == sizeof raw - 1);
+	assert(memcmp(chunk, raw, sizeof raw - 1) == 0);
+	memset(&stream, 0, sizeof stream);
+	chunk[0] = '\033';
+	assert(win32_key_unwrap(&stream, chunk, 1) == 1 && chunk[0] == '\033');
+}
+
 int
 main(void)
 {
@@ -43,6 +84,7 @@ main(void)
 	struct utf8_data ud;
 	utf8_char uc;
 	size_t used;
+	expect_terminal_input();
 
 	for (size_t i = 2; i < strlen(native_enter); ++i)
 		assert(win32_key_decode(native_enter, i, &record, &used) == 1);
