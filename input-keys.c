@@ -22,6 +22,9 @@
 #include <string.h>
 
 #include "tmux.h"
+#ifdef _WIN32
+#include "compat/win32-key.h"
+#endif
 
 /*
  * This file is rather misleadingly named, it contains the code which takes a
@@ -31,6 +34,8 @@
  */
 
 static void	 input_key_mouse(struct window_pane *, struct mouse_event *);
+static void	 input_key_write(const char *, struct bufferevent *,
+		     const char *, size_t);
 
 /* Entry in the key tree. */
 struct input_key_entry {
@@ -397,6 +402,11 @@ input_key_build(void)
 int
 input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
 {
+#ifdef _WIN32
+	char	sequence[WIN32_KEY_SEQUENCE_MAX];
+	int	length;
+#endif
+
 	if (log_get_level() != 0) {
 		log_debug("writing key 0x%llx (%s) to %%%u", key,
 		    key_string_lookup_key(key, 1), wp->id);
@@ -407,6 +417,17 @@ input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
 			input_key_mouse(wp, m);
 		return (0);
 	}
+
+#ifdef _WIN32
+	/* Preserve the encoding explicitly requested by a VT application. */
+	if (wp->win32_pty != NULL && !(wp->screen->mode & EXTENDED_KEY_MODES)) {
+		length = win32_key_encode(key, sequence, sizeof sequence);
+		if (length != 0) {
+			input_key_write(__func__, wp->event, sequence, length);
+			return (0);
+		}
+	}
+#endif
 	return (input_key(wp->screen, wp->event, key));
 }
 
