@@ -239,6 +239,8 @@ win32_key_code(const KEY_EVENT_RECORD *record)
 		return (vk | modifiers);
 	if ((modifiers & KEYC_CTRL) && vk >= 'A' && vk <= 'Z')
 		return ((vk - 'A' + 'a') | modifiers);
+	if (ch == 0 && vk >= '0' && vk <= '9')
+		return (vk | modifiers);
 	if (ch >= ' ' && ch <= '~') {
 		if ((modifiers & (KEYC_CTRL | KEYC_META)) == 0)
 			modifiers &= ~KEYC_SHIFT;
@@ -247,12 +249,17 @@ win32_key_code(const KEY_EVENT_RECORD *record)
 	if (ch > 0x7f && utf8_fromwc(ch, &ud) == UTF8_DONE &&
 	    utf8_from_data(&ud, &uc) == UTF8_DONE)
 		return (uc | modifiers);
-	if (ch == 0 || ch >= 0x20)
+	if (ch != 0 && ch < 0x20) {
+		key = ch | 0x40;
+		if (key >= 'A' && key <= 'Z')
+			key |= 0x20;
+		return (key | modifiers | KEYC_CTRL);
+	}
+	if ((vk == 0 && ch == 0) || (vk >= VK_SHIFT && vk <= VK_MENU) ||
+	    (vk >= VK_LSHIFT && vk <= VK_RMENU))
 		return (KEYC_UNKNOWN);
-	key = ch | 0x40;
-	if (key >= 'A' && key <= 'Z')
-		key |= 0x20;
-	return (key | modifiers | KEYC_CTRL);
+	/* Keep native keys that have no equivalent in the tmux key table. */
+	return (KEYC_ANY);
 }
 
 #endif
