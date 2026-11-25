@@ -27,6 +27,9 @@
 #endif
 
 #include <windows.h>
+#include <softpub.h>
+#include <wincrypt.h>
+#include <wintrust.h>
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -59,6 +62,73 @@ struct win32_conpty_api {
 static INIT_ONCE		 conpty_once = INIT_ONCE_STATIC_INIT;
 static struct win32_conpty_api conpty_api;
 
+struct win32_conpty_trust {
+	union {
+		FARPROC proc;
+		LONG (WINAPI *call)(HWND, GUID *, LPVOID);
+	} verify;
+	union {
+		FARPROC proc;
+		CRYPT_PROVIDER_DATA *(WINAPI *call)(HANDLE);
+	} provider;
+	union {
+		FARPROC proc;
+		CRYPT_PROVIDER_SGNR *(WINAPI *call)(CRYPT_PROVIDER_DATA *,
+		    DWORD, BOOL, DWORD);
+	} signer;
+	union {
+		FARPROC proc;
+		BOOL (WINAPI *call)(LPCSTR, PCCERT_CHAIN_CONTEXT,
+		    PCERT_CHAIN_POLICY_PARA, PCERT_CHAIN_POLICY_STATUS);
+	} chain_policy;
+};
+
+static int
+win32_conpty_verify_file(const struct win32_conpty_trust *trust,
+    const wchar_t *path, HANDLE handle)
+{
+	GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+	WINTRUST_FILE_INFO file = {0};
+	WINTRUST_DATA data = {0};
+	CERT_CHAIN_POLICY_PARA policy = {0};
+	CERT_CHAIN_POLICY_STATUS status = {0};
+	CRYPT_PROVIDER_DATA *provider;
+	CRYPT_PROVIDER_SGNR *signer;
+	int valid = 0;
+
+	file.cbStruct = sizeof file;
+	file.pcwszFilePath = path;
+	file.hFile = handle;
+	data.cbStruct = sizeof data;
+	data.dwUIChoice = WTD_UI_NONE;
+	data.fdwRevocationChecks = WTD_REVOKE_NONE;
+	data.dwUnionChoice = WTD_CHOICE_FILE;
+	data.pFile = &file;
+	data.dwStateAction = WTD_STATEACTION_VERIFY;
+	data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL|WTD_DISABLE_MD2_MD4;
+	if (trust->verify.call(INVALID_HANDLE_VALUE, &action, &data) != 0)
+		goto done;
+
+	/* Check the chain of the signer that passed Authenticode verification. */
+	provider = trust->provider.call(data.hWVTStateData);
+	if (provider == NULL)
+		goto done;
+	signer = trust->signer.call(provider, 0, FALSE, 0);
+	if (signer == NULL || signer->pChainContext == NULL)
+		goto done;
+	policy.cbSize = sizeof policy;
+	policy.dwFlags =
+	    MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG;
+	status.cbSize = sizeof status;
+	valid = trust->chain_policy.call(CERT_CHAIN_POLICY_MICROSOFT_ROOT,
+	    signer->pChainContext, &policy, &status) && status.dwError == 0;
+
+done:
+	data.dwStateAction = WTD_STATEACTION_CLOSE;
+	trust->verify.call(INVALID_HANDLE_VALUE, &action, &data);
+	return (valid);
+}
+
 static int
 win32_conpty_load_api(HMODULE module, int bundled)
 {
@@ -89,31 +159,79 @@ win32_conpty_load_api(HMODULE module, int bundled)
 	return (0);
 }
 
-static HMODULE
+static int
 win32_conpty_load_bundled(void)
 {
 	static const wchar_t host[] = L"conpty\\OpenConsole.exe";
 	static const wchar_t library[] = L"conpty\\conpty.dll";
-	wchar_t	 path[32768], *filename;
-	DWORD	 length, attributes;
+	struct win32_conpty_trust trust;
+	wchar_t host_path[32768], library_path[32768], *filename;
+	DWORD length;
+	size_t prefix;
+	HMODULE wintrust, crypt32, module = NULL;
+	HANDLE host_file = INVALID_HANDLE_VALUE, dll_file = INVALID_HANDLE_VALUE;
+	int loaded = 0;
 
-	length = GetModuleFileNameW(NULL, path, _countof(path));
-	if (length == 0 || length >= _countof(path))
-		return (NULL);
-	filename = wcsrchr(path, L'\\');
+	length = GetModuleFileNameW(NULL, host_path, _countof(host_path));
+	if (length == 0 || length >= _countof(host_path))
+		return (0);
+	filename = wcsrchr(host_path, L'\\');
 	if (filename == NULL)
-		return (NULL);
-	filename++;
-	if (_countof(host) > _countof(path) - (size_t)(filename - path))
-		return (NULL);
+		return (0);
+	prefix = (size_t)(++filename - host_path);
+	if (prefix + _countof(host) > _countof(host_path))
+		return (0);
+	memcpy(library_path, host_path, prefix * sizeof *filename);
 	memcpy(filename, host, sizeof host);
-	attributes = GetFileAttributesW(path);
-	if (attributes == INVALID_FILE_ATTRIBUTES ||
-	    (attributes & FILE_ATTRIBUTE_DIRECTORY))
-		return (NULL);
-	memcpy(filename, library, sizeof library);
-	return (LoadLibraryExW(path, NULL,
-	    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32));
+	memcpy(library_path + prefix, library, sizeof library);
+
+	/* Keep both files open without write or delete sharing while verifying. */
+	host_file = CreateFileW(host_path, GENERIC_READ, FILE_SHARE_READ, NULL,
+	    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (host_file == INVALID_HANDLE_VALUE)
+		return (0);
+	dll_file = CreateFileW(library_path, GENERIC_READ, FILE_SHARE_READ, NULL,
+	    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (dll_file == INVALID_HANDLE_VALUE) {
+		CloseHandle(host_file);
+		return (0);
+	}
+
+	wintrust = LoadLibraryExW(L"wintrust.dll", NULL,
+	    LOAD_LIBRARY_SEARCH_SYSTEM32);
+	crypt32 = LoadLibraryExW(L"crypt32.dll", NULL,
+	    LOAD_LIBRARY_SEARCH_SYSTEM32);
+	if (wintrust == NULL || crypt32 == NULL)
+		goto done;
+	trust.verify.proc = GetProcAddress(wintrust, "WinVerifyTrust");
+	trust.provider.proc = GetProcAddress(wintrust,
+	    "WTHelperProvDataFromStateData");
+	trust.signer.proc = GetProcAddress(wintrust,
+	    "WTHelperGetProvSignerFromChain");
+	trust.chain_policy.proc = GetProcAddress(crypt32,
+	    "CertVerifyCertificateChainPolicy");
+	if (trust.verify.proc == NULL || trust.provider.proc == NULL ||
+	    trust.signer.proc == NULL || trust.chain_policy.proc == NULL)
+		goto done;
+	if (!win32_conpty_verify_file(&trust, host_path, host_file) ||
+	    !win32_conpty_verify_file(&trust, library_path, dll_file))
+		goto done;
+	module = LoadLibraryExW(library_path, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+	if (module != NULL)
+		loaded = (win32_conpty_load_api(module, 1) == 0);
+
+done:
+	if (!loaded && module != NULL)
+		FreeLibrary(module);
+	if (crypt32 != NULL)
+		FreeLibrary(crypt32);
+	if (wintrust != NULL)
+		FreeLibrary(wintrust);
+	CloseHandle(dll_file);
+	/* The bundled DLL launches this host by path for each new pane. */
+	if (!loaded)
+		CloseHandle(host_file);
+	return (loaded);
 }
 
 static BOOL CALLBACK
@@ -123,12 +241,8 @@ win32_conpty_init_once(__unused PINIT_ONCE once, __unused PVOID parameter,
 	HMODULE module;
 
 	/* A bundled DLL and its host form one backend for all HPCON handles. */
-	module = win32_conpty_load_bundled();
-	if (module != NULL) {
-		if (win32_conpty_load_api(module, 1) == 0)
-			return (TRUE);
-		FreeLibrary(module);
-	}
+	if (win32_conpty_load_bundled())
+		return (TRUE);
 	module = GetModuleHandleW(L"kernel32.dll");
 	return (module != NULL && win32_conpty_load_api(module, 0) == 0);
 }
