@@ -85,7 +85,23 @@ osdep_win32_is_console_host(const PROCESSENTRY32W *entry)
 }
 
 static int
-osdep_win32_find_child(HANDLE snapshot, DWORD parent, DWORD *child)
+osdep_win32_process_creation_time(DWORD pid, FILETIME *creation)
+{
+	FILETIME	exited, kernel, user;
+	HANDLE		process;
+	BOOL		found;
+
+	process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (process == NULL)
+		return (0);
+	found = GetProcessTimes(process, creation, &exited, &kernel, &user);
+	CloseHandle(process);
+	return (found);
+}
+
+static int
+osdep_win32_find_child(HANDLE snapshot, DWORD parent,
+    const FILETIME *parent_creation, DWORD *child, FILETIME *child_creation)
 {
 	PROCESSENTRY32W	entry;
 
@@ -94,12 +110,17 @@ osdep_win32_find_child(HANDLE snapshot, DWORD parent, DWORD *child)
 	if (!Process32FirstW(snapshot, &entry))
 		return (0);
 	do {
-		if (entry.th32ParentProcessID == parent &&
-		    entry.th32ProcessID != parent &&
-		    !osdep_win32_is_console_host(&entry)) {
-			*child = entry.th32ProcessID;
-			return (1);
-		}
+		if (entry.th32ParentProcessID != parent ||
+		    entry.th32ProcessID == parent ||
+		    osdep_win32_is_console_host(&entry))
+			continue;
+		/* A parent PID in the snapshot can refer to an older process. */
+		if (!osdep_win32_process_creation_time(entry.th32ProcessID,
+		    child_creation) ||
+		    CompareFileTime(child_creation, parent_creation) < 0)
+			continue;
+		*child = entry.th32ProcessID;
+		return (1);
 	} while (Process32NextW(snapshot, &entry));
 	return (0);
 }
@@ -145,18 +166,22 @@ osdep_format_end(void)
 static DWORD
 osdep_win32_active_pid(DWORD pid)
 {
-	DWORD	child;
-	u_int	i;
+	FILETIME	parent_creation, child_creation;
+	DWORD		child;
+	u_int		i;
 
 	if (osdep_win32_format_depth == 0)
 		osdep_win32_refresh_snapshot();
-	if (osdep_win32_snapshot == INVALID_HANDLE_VALUE)
+	if (osdep_win32_snapshot == INVALID_HANDLE_VALUE ||
+	    !osdep_win32_process_creation_time(pid, &parent_creation))
 		return (pid);
 
 	for (i = 0; i < 64; i++) {
-		if (!osdep_win32_find_child(osdep_win32_snapshot, pid, &child))
+		if (!osdep_win32_find_child(osdep_win32_snapshot, pid,
+		    &parent_creation, &child, &child_creation))
 			break;
 		pid = child;
+		parent_creation = child_creation;
 	}
 	return (pid);
 }
