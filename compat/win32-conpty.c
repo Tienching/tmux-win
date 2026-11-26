@@ -60,7 +60,7 @@ struct win32_conpty_api {
 };
 
 static INIT_ONCE		 conpty_once = INIT_ONCE_STATIC_INIT;
-static struct win32_conpty_api conpty_api;
+static struct win32_conpty_api bundled_conpty_api, system_conpty_api;
 
 struct win32_conpty_trust {
 	union {
@@ -130,7 +130,7 @@ done:
 }
 
 static int
-win32_conpty_load_api(HMODULE module, int bundled)
+win32_conpty_load_api(HMODULE module, int bundled, struct win32_conpty_api *api)
 {
 	union {
 		FARPROC				proc;
@@ -153,13 +153,13 @@ win32_conpty_load_api(HMODULE module, int bundled)
 	    "ClosePseudoConsole");
 	if (create.proc == NULL || resize.proc == NULL || close.proc == NULL)
 		return (-1);
-	conpty_api.create = create.create;
-	conpty_api.resize = resize.resize;
-	conpty_api.close = close.close;
+	api->create = create.create;
+	api->resize = resize.resize;
+	api->close = close.close;
 	return (0);
 }
 
-static int
+static void
 win32_conpty_load_bundled(void)
 {
 	static const wchar_t host[] = L"conpty\\OpenConsole.exe";
@@ -174,13 +174,13 @@ win32_conpty_load_bundled(void)
 
 	length = GetModuleFileNameW(NULL, host_path, _countof(host_path));
 	if (length == 0 || length >= _countof(host_path))
-		return (0);
+		return;
 	filename = wcsrchr(host_path, L'\\');
 	if (filename == NULL)
-		return (0);
+		return;
 	prefix = (size_t)(++filename - host_path);
 	if (prefix + _countof(host) > _countof(host_path))
-		return (0);
+		return;
 	memcpy(library_path, host_path, prefix * sizeof *filename);
 	memcpy(filename, host, sizeof host);
 	memcpy(library_path + prefix, library, sizeof library);
@@ -189,12 +189,12 @@ win32_conpty_load_bundled(void)
 	host_file = CreateFileW(host_path, GENERIC_READ, FILE_SHARE_READ, NULL,
 	    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (host_file == INVALID_HANDLE_VALUE)
-		return (0);
+		return;
 	dll_file = CreateFileW(library_path, GENERIC_READ, FILE_SHARE_READ, NULL,
 	    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (dll_file == INVALID_HANDLE_VALUE) {
 		CloseHandle(host_file);
-		return (0);
+		return;
 	}
 
 	wintrust = LoadLibraryExW(L"wintrust.dll", NULL,
@@ -218,7 +218,7 @@ win32_conpty_load_bundled(void)
 		goto done;
 	module = LoadLibraryExW(library_path, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	if (module != NULL)
-		loaded = (win32_conpty_load_api(module, 1) == 0);
+		loaded = (win32_conpty_load_api(module, 1, &bundled_conpty_api) == 0);
 
 done:
 	if (!loaded && module != NULL)
@@ -231,7 +231,6 @@ done:
 	/* The bundled DLL launches this host by path for each new pane. */
 	if (!loaded)
 		CloseHandle(host_file);
-	return (loaded);
 }
 
 static BOOL CALLBACK
@@ -240,11 +239,12 @@ win32_conpty_init_once(__unused PINIT_ONCE once, __unused PVOID parameter,
 {
 	HMODULE module;
 
-	/* A bundled DLL and its host form one backend for all HPCON handles. */
-	if (win32_conpty_load_bundled())
-		return (TRUE);
 	module = GetModuleHandleW(L"kernel32.dll");
-	return (module != NULL && win32_conpty_load_api(module, 0) == 0);
+	if (module != NULL)
+		win32_conpty_load_api(module, 0, &system_conpty_api);
+	win32_conpty_load_bundled();
+	return (bundled_conpty_api.create != NULL ||
+	    system_conpty_api.create != NULL);
 }
 
 static int
@@ -298,6 +298,7 @@ win32_close_handle(void **handle)
 }
 
 struct win32_close_pseudoconsole_data {
+	const struct win32_conpty_api *api;
 	HPCON	pseudoconsole;
 };
 
@@ -306,23 +307,25 @@ win32_close_pseudoconsole_thread(LPVOID data0)
 {
 	struct win32_close_pseudoconsole_data	*data = data0;
 
-	conpty_api.close(data->pseudoconsole);
+	data->api->close(data->pseudoconsole);
 	free(data);
 	return (0);
 }
 
 static void
-win32_close_pseudoconsole(HPCON pseudoconsole)
+win32_close_pseudoconsole(const struct win32_conpty_api *api,
+    HPCON pseudoconsole)
 {
 	struct win32_close_pseudoconsole_data	*data;
 	HANDLE					 thread;
 
-	if (pseudoconsole == NULL || win32_conpty_init() != 0)
+	if (pseudoconsole == NULL)
 		return;
 
 	data = malloc(sizeof *data);
 	if (data == NULL)
 		return;
+	data->api = api;
 	data->pseudoconsole = pseudoconsole;
 	thread = CreateThread(NULL, 0, win32_close_pseudoconsole_thread,
 	    data, 0, NULL);
@@ -472,10 +475,11 @@ win32_conpty_available(void)
 	return (win32_conpty_init() == 0);
 }
 
-int
-win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
+static int
+win32_conpty_spawn_with_api(struct win32_conpty *pty,
+    const struct win32_conpty_api *api, const wchar_t *command,
     const wchar_t *cwd, const wchar_t *environment, unsigned short columns,
-    unsigned short rows)
+    unsigned short rows, int *create_failed)
 {
 	COORD			 size;
 	HANDLE			 input_read = NULL, input_write = NULL;
@@ -497,15 +501,9 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	    CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP |
 	    win32_job_creation_flags_for_child();
 
-	if (pty == NULL) {
-		SetLastError(ERROR_INVALID_PARAMETER);
-		return (-1);
-	}
-	memset(pty, 0, sizeof *pty);
+	*create_failed = 0;
 	memset(&process, 0, sizeof process);
 
-	if (win32_conpty_init() != 0)
-		return (-1);
 	if (command == NULL || *command == L'\0')
 		command = L"cmd.exe";
 	if (columns == 0)
@@ -532,9 +530,9 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	    &limits, sizeof limits))
 		goto fail;
 
-	hr = conpty_api.create(size, input_read, output_write, 0,
-	    &pseudoconsole);
+	hr = api->create(size, input_read, output_write, 0, &pseudoconsole);
 	if (FAILED(hr)) {
+		*create_failed = 1;
 		SetLastError(HRESULT_CODE(hr));
 		goto fail;
 	}
@@ -629,6 +627,7 @@ win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
 	HeapFree(GetProcessHeap(), 0, attributes);
 	free(mutable_command);
 
+	pty->api = api;
 	pty->pseudoconsole = pseudoconsole;
 	pty->input = input_write;
 	pty->output = output_read;
@@ -669,9 +668,36 @@ fail:
 	if (job != NULL)
 		CloseHandle(job);
 	/* No reader exists on spawn failure; close pipes before bounded close. */
-	win32_close_pseudoconsole(pseudoconsole);
+	win32_close_pseudoconsole(api, pseudoconsole);
 	SetLastError(saved_error);
 	return (-1);
+}
+
+int
+win32_conpty_spawn(struct win32_conpty *pty, const wchar_t *command,
+    const wchar_t *cwd, const wchar_t *environment, unsigned short columns,
+    unsigned short rows)
+{
+	int create_failed;
+
+	if (pty == NULL) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return (-1);
+	}
+	memset(pty, 0, sizeof *pty);
+	if (win32_conpty_init() != 0)
+		return (-1);
+
+	if (bundled_conpty_api.create != NULL) {
+		if (win32_conpty_spawn_with_api(pty, &bundled_conpty_api, command,
+		    cwd, environment, columns, rows, &create_failed) == 0)
+			return (0);
+		/* A failure after allocation must not start the command again. */
+		if (!create_failed || system_conpty_api.create == NULL)
+			return (-1);
+	}
+	return (win32_conpty_spawn_with_api(pty, &system_conpty_api, command,
+	    cwd, environment, columns, rows, &create_failed));
 }
 
 int
@@ -686,12 +712,9 @@ win32_conpty_resize(struct win32_conpty *pty, unsigned short columns,
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return (-1);
 	}
-	if (win32_conpty_init() != 0)
-		return (-1);
-
 	size.X = (SHORT)columns;
 	size.Y = (SHORT)rows;
-	hr = conpty_api.resize((HPCON)pty->pseudoconsole, size);
+	hr = pty->api->resize((HPCON)pty->pseudoconsole, size);
 	if (FAILED(hr)) {
 		SetLastError(HRESULT_CODE(hr));
 		return (-1);
@@ -709,7 +732,7 @@ win32_conpty_close(struct win32_conpty *pty)
 	win32_close_handle(&pty->output);
 	win32_close_handle(&pty->thread);
 	win32_close_handle(&pty->process);
-	win32_close_pseudoconsole((HPCON)pty->pseudoconsole);
+	win32_close_pseudoconsole(pty->api, (HPCON)pty->pseudoconsole);
 	win32_close_handle(&pty->job);
 	memset(pty, 0, sizeof *pty);
 }
