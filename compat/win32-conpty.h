@@ -21,7 +21,10 @@
 
 #include <wchar.h>
 
+struct win32_conpty_api;
+
 struct win32_conpty {
+	const struct win32_conpty_api *api;
 	void		*pseudoconsole;
 	void		*input;
 	void		*output;

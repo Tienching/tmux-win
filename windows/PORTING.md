@@ -133,6 +133,14 @@ still uses `win32-ipc.c` loopback token IPC until the active-path audit is green
 - `compat/win32-conpty.[ch]` dynamically loads the Windows ConPTY API and
   spawns a process attached to a pseudoconsole with an optional explicit
   Unicode environment block.
+  A distribution can place `conpty.dll` and `OpenConsole.exe` from the same
+  Microsoft.Windows.Console.ConPTY package in a `conpty` directory beside
+  `tmux.exe`. This backend can forward OSC default-colour queries from panes.
+  Before loading this backend, tmux verifies the Authenticode signatures of
+  both files against the Microsoft application root using locally available
+  trust data. If the bundle is missing, fails validation, or cannot create a
+  pseudoconsole, tmux uses the system ConPTY API when available. Each
+  pseudoconsole keeps its own backend for resize and close.
 - ConPTY process startup sets `STARTF_USESTDHANDLES` with empty standard
   handles before applying `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, so shells
   write to the pseudoconsole pipe instead of inheriting the parent client's

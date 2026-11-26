@@ -1,10 +1,17 @@
-/* Standalone, isolated fault injector. Link win32-conpty/job/process-tree. */
-#define _WIN32_WINNT 0x0A00
-#include <windows.h>
+/* Standalone, isolated fault injector. Link win32-job/process-tree. */
 #include <stdio.h>
-#include <wchar.h>
-#include "../compat/win32-conpty.h"
+#include "../compat/win32-conpty.c"
 struct payload_result { wchar_t cwd[MAX_PATH], environment[128], argument[128]; };
+
+static int bundled_create_attempts;
+
+static HRESULT WINAPI
+fail_bundled_create(__unused COORD size, __unused HANDLE input,
+    __unused HANDLE output, __unused DWORD flags, __unused HPCON *console)
+{
+	bundled_create_attempts++;
+	return (HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT));
+}
 
 int wmain(int argc, wchar_t **argv)
 {
@@ -50,6 +57,10 @@ int wmain(int argc, wchar_t **argv)
 	if (argc > 1 && wcscmp(argv[1], L"--sleep-child") == 0) {
 		Sleep(INFINITE);
 		return 5;
+	}
+	if (argc > 1 && wcscmp(argv[1], L"--resize-child") == 0) {
+		Sleep(5000);
+		return 0;
 	}
 	GetTempPathW(MAX_PATH, directory);
 	GetTempFileNameW(directory, L"ack", 0, marker);
@@ -105,5 +116,19 @@ int wmain(int argc, wchar_t **argv)
 	    wcscmp(payload.environment, L"env value 测试") != 0 ||
 	    wcscmp(payload.argument, L"quoted value 测试") != 0) return 18;
 	puts("native_startup: unicode_cwd_environment_quoting_exit37=true");
+
+	/* Reject the bundled backend before creating a child. */
+	bundled_conpty_api = system_conpty_api;
+	bundled_conpty_api.create = fail_bundled_create;
+	swprintf(command, 32768, L"\"%ls\" --resize-child", exe);
+	if (win32_conpty_spawn(&pty, command, NULL, NULL, 80, 24) != 0)
+		return 19;
+	if (bundled_create_attempts != 1 || pty.api != &system_conpty_api ||
+	    win32_conpty_resize(&pty, 100, 30) != 0) {
+		win32_conpty_close(&pty);
+		return 20;
+	}
+	win32_conpty_close(&pty);
+	puts("bundled_create_failure: system_spawn_resize_close=true");
 	return 0;
 }

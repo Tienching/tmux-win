@@ -329,7 +329,7 @@ if ($ClientStressIterations -gt 0) {
 
 if ($SignalMatrixIterations -gt 0) {
 	& (Join-Path $PSScriptRoot 'conpty-startup-failure-test.ps1') -CC $CC
-	Add-Step "conpty-startup-failure" "passed" "lost-ack;missing-command;unicode;exit-status"
+	Add-Step "conpty-startup-failure" "passed" "lost-ack;missing-command;unicode;exit-status;bundled-create-fallback"
 	& $signalMatrixStress -Tmux (Join-Path $Package "tmux.exe") `
 	    -Iterations $SignalMatrixIterations `
 	    -TimeoutSeconds $SmokeTimeoutSeconds

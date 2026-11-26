@@ -10,7 +10,6 @@ try {
     $env:Path = (Split-Path $compiler) + ';' + [Environment]::SystemDirectory
     & $compiler -municode -static-libgcc -I (Join-Path $root 'compat') `
         (Join-Path $PSScriptRoot 'conpty-startup-failure-test.c') `
-        (Join-Path $root 'compat/win32-conpty.c') `
         (Join-Path $root 'compat/win32-job.c') `
         (Join-Path $root 'compat/win32-process-tree.c') -o $exe
     if ($LASTEXITCODE -ne 0) { throw 'ConPTY startup regression compilation failed' }
