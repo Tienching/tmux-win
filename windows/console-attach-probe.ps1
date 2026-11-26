@@ -25,6 +25,7 @@ param(
 	[string]$ResizeLogFile = "",
 	[string]$ResizeMarkerPrefix = "",
 	[switch]$SkipInitialInput,
+	[string]$KeyRecords = "",
 	[string]$CtrlCCommand = "",
 	[string]$CtrlCFile = "",
 	[string]$CtrlCMarker = "",
@@ -277,6 +278,11 @@ public static class Win32ConsoleAttachProbe
 		}
 	}
 
+	public static void SendKey(ushort vk, ushort ch, uint control)
+	{
+		SendKey((char)ch, vk, (ushort)MapVirtualKeyW(vk, 0), control);
+	}
+
 	static void SendKey(char ch, ushort vk, ushort scan, uint control)
 	{
 		IntPtr input = GetStdHandle(STD_INPUT_HANDLE);
@@ -381,7 +387,14 @@ try {
 	Set-Content -LiteralPath $StartedFile -Encoding ascii -Value `
 	    $process.Id
 	Start-Sleep -Milliseconds 1500
-	if ($SkipInitialInput) {
+	if ($KeyRecords) {
+		foreach ($key in $KeyRecords.Split(',')) {
+			$vk, $ch, $control = $key.Split(':')
+			[Win32ConsoleAttachProbe]::SendKey([UInt16]$vk,
+			    [UInt16]$ch, [UInt32]$control)
+		}
+		Set-Content -LiteralPath $InputFile -Encoding ascii -Value "sent"
+	} elseif ($SkipInitialInput) {
 		Set-Content -LiteralPath $InputFile -Encoding ascii -Value `
 		    "skipped"
 	} else {

@@ -1254,6 +1254,9 @@ server_client_key_callback(struct cmdq_item *item, void *data)
 	    key != KEYC_FOCUS_IN &&
 	    key != KEYC_FOCUS_OUT &&
 	    (~key & KEYC_SENT) &&
+#ifdef _WIN32
+	    !event->win32_key.bKeyDown &&
+#endif
 	    server_client_is_assume_paste(c))
 		goto paste_key;
 
@@ -1433,7 +1436,7 @@ forward_key:
 	if (c->flags & CLIENT_READONLY)
 		goto out;
 	if (wp != NULL)
-		window_pane_key(wp, c, s, wl, key, m);
+		window_pane_key(wp, c, s, wl, key, m, event);
 	goto out;
 
 paste_key:

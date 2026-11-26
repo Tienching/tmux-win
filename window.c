@@ -1475,7 +1475,8 @@ window_pane_copy_paste(struct window_pane *wp, char *buf, size_t len)
 }
 
 static void
-window_pane_copy_key(struct window_pane *wp, key_code key)
+window_pane_copy_key(struct window_pane *wp, key_code key,
+    const struct key_event *event)
 {
  	struct window_pane	*loop;
 
@@ -1486,7 +1487,7 @@ window_pane_copy_key(struct window_pane *wp, key_code key)
 		    (~loop->flags & PANE_INPUTOFF) &&
 		    window_pane_visible(loop) &&
 		    options_get_number(loop->options, "synchronize-panes")) {
-			input_key_pane(loop, key, NULL);
+			input_key_pane(loop, key, NULL, event);
 #ifdef _WIN32
 			window_pane_win32_flush(loop);
 #endif
@@ -1524,7 +1525,8 @@ window_pane_paste(struct window_pane *wp, key_code key, char *buf, size_t len)
 
 int
 window_pane_key(struct window_pane *wp, struct client *c, struct session *s,
-    struct winlink *wl, key_code key, struct mouse_event *m)
+    struct winlink *wl, key_code key, struct mouse_event *m,
+    const struct key_event *event)
 {
 	struct window_mode_entry	*wme;
 
@@ -1555,7 +1557,7 @@ window_pane_key(struct window_pane *wp, struct client *c, struct session *s,
 	if (wp->fd == -1 || wp->flags & PANE_INPUTOFF)
 		return (0);
 
-	if (input_key_pane(wp, key, m) != 0)
+	if (input_key_pane(wp, key, m, event) != 0)
 		return (-1);
 #ifdef _WIN32
 	window_pane_win32_flush(wp);
@@ -1564,7 +1566,7 @@ window_pane_key(struct window_pane *wp, struct client *c, struct session *s,
 	if (KEYC_IS_MOUSE(key))
 		return (0);
 	if (options_get_number(wp->options, "synchronize-panes"))
-		window_pane_copy_key(wp, key);
+		window_pane_copy_key(wp, key, event);
 	return (0);
 }
 

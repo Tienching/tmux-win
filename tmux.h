@@ -1637,6 +1637,9 @@ struct mouse_event {
 struct key_event {
 	key_code		 key;
 	struct mouse_event	 m;
+#ifdef _WIN32
+	KEY_EVENT_RECORD	 win32_key;
+#endif
 
 	char			*buf;
 	size_t			 len;
@@ -3200,7 +3203,8 @@ void	 input_cancel_requests(struct client *);
 
 /* input-key.c */
 void	 input_key_build(void);
-int	 input_key_pane(struct window_pane *, key_code, struct mouse_event *);
+int	 input_key_pane(struct window_pane *, key_code, struct mouse_event *,
+	     const struct key_event *);
 int	 input_key(struct screen *, struct bufferevent *, key_code);
 int	 input_key_get_mouse(struct screen *, struct mouse_event *, u_int,
 	     u_int, const char **, size_t *);
@@ -3486,7 +3490,7 @@ void		 window_pane_reset_mode(struct window_pane *);
 void		 window_pane_reset_mode_all(struct window_pane *);
 int		 window_pane_key(struct window_pane *, struct client *,
 		     struct session *, struct winlink *, key_code,
-		     struct mouse_event *);
+		     struct mouse_event *, const struct key_event *);
 void		 window_pane_paste(struct window_pane *, key_code, char *,
 		     size_t);
 int		 window_pane_visible(struct window_pane *);

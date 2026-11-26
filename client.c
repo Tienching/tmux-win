@@ -43,6 +43,7 @@
 #include "compat/win32-handle.h"
 #include "compat/win32-ipc.h"
 #include "compat/win32-job.h"
+#include "compat/win32-key.h"
 #include "compat/win32-socketpair.h"
 #endif
 
@@ -631,7 +632,8 @@ client_win32_stdin_send(uintptr_t socket, const char *buffer, int n)
 }
 
 static int
-client_win32_stdin_read_console(HANDLE input, uintptr_t socket)
+client_win32_stdin_read_console(HANDLE input, uintptr_t socket,
+    struct win32_key_stream *keys)
 {
 	wchar_t	wbuffer[CLIENT_WIN32_STDIN_BUFFER];
 	char	*buffer;
@@ -656,14 +658,17 @@ client_win32_stdin_read_console(HANDLE input, uintptr_t socket)
 		    GetLastError());
 		return (-1);
 	}
-	buffer = xmalloc((size_t)size);
-	if (WideCharToMultiByte(CP_UTF8, 0, wbuffer, (int)read, buffer, size,
-	    NULL, NULL) == 0) {
+	buffer = xmalloc(keys->length + size);
+	if (WideCharToMultiByte(CP_UTF8, 0, wbuffer, (int)read,
+	    buffer + keys->length, size, NULL, NULL) == 0) {
 		client_win32_note_stdin_status(CLIENT_WIN32_STDIN_READ_FAILED,
 		    GetLastError());
 		retval = -1;
-	} else if (client_win32_stdin_send(socket, buffer, size) != 0)
-		retval = -1;
+	} else {
+		size = win32_key_unwrap(keys, buffer, size);
+		if (client_win32_stdin_send(socket, buffer, size) != 0)
+			retval = -1;
+	}
 	free(buffer);
 	return (retval);
 }
@@ -676,6 +681,7 @@ client_win32_stdin_thread_proc(LPVOID data)
 	char		 buffer[CLIENT_WIN32_STDIN_BUFFER];
 	DWORD		 mode, read;
 	int		 input_console;
+	struct win32_key_stream keys = { 0 };
 
 	input = GetStdHandle(STD_INPUT_HANDLE);
 	if (input == INVALID_HANDLE_VALUE || input == NULL) {
@@ -687,7 +693,7 @@ client_win32_stdin_thread_proc(LPVOID data)
 
 	for (;;) {
 		if (input_console) {
-			if (client_win32_stdin_read_console(input, socket) != 0)
+			if (client_win32_stdin_read_console(input, socket, &keys) != 0)
 				break;
 			continue;
 		}

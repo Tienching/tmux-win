@@ -442,6 +442,9 @@ tty_start_tty(struct tty *tty)
 #endif
 
 	tty_putcode(tty, TTYC_SMCUP);
+#ifdef _WIN32
+	tty_puts(tty, "\033[?9001h");
+#endif
 
 	tty_putcode(tty, TTYC_SMKX);
 	tty_putcode(tty, TTYC_CLEAR);
@@ -594,6 +597,9 @@ tty_stop_tty(struct tty *tty)
 	if (tty_use_margin(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_DSMG));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_RMCUP));
+#ifdef _WIN32
+	tty_raw(tty, "\033[?9001l");
+#endif
 
 	if (tty->term->flags & TERM_VT100LIKE)
 		tty_raw(tty, "\033[?2031l");
